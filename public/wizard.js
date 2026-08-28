@@ -45,14 +45,30 @@
   });
 
   async function api(path, opts) {
-    var res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" }, credentials: "same-origin" }, opts || {}));
+    var res;
+    try {
+      res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" }, credentials: "same-origin" }, opts || {}));
+    } catch (err) {
+      // fetch() itself threw (offline, DNS failure, CORS, etc). Every caller
+      // already checks result.ok and re-enables its own button/shows its own
+      // error — normalize to that shape instead of letting a spinner (e.g.
+      // the Connect step's "Setting things up…") hang forever with no way
+      // to recover short of reloading the page.
+      return { ok: false, detail: "Network error — couldn't reach the server. Check your connection and try again." };
+    }
     if (res.status === 401) {
       // Session expired or was never established — send back through the
       // purchase-verification/login flow rather than showing a dead wizard.
       window.location.href = "/login";
       return new Promise(function () {}); // never resolves; we're navigating away
     }
-    return res.json();
+    try {
+      return await res.json();
+    } catch (err) {
+      // Response came back but wasn't valid JSON (e.g. a proxy/edge error
+      // page) — same reasoning as above, fail into the normal error path.
+      return { ok: false, detail: "Unexpected response from the server (status " + res.status + "). Try again in a moment." };
+    }
   }
 
   // ---- step: connect (repo picker — auth already happened before /app loaded) ----
