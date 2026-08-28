@@ -87,8 +87,18 @@
       var opt = e.target.selectedOptions[0];
       if (!opt || !opt.value) { state.owner = null; state.repo = null; state.creatingNew = false; }
       else {
-        state.owner = opt.getAttribute("data-owner");
-        state.repo = opt.getAttribute("data-name");
+        var newOwner = opt.getAttribute("data-owner");
+        var newRepo = opt.getAttribute("data-name");
+        // Picking a different repo than the one already connected means the
+        // user wants to switch targets, not just move on to the next step —
+        // re-enable Connect so a real POST /api/connect fires against the
+        // newly selected repo instead of the button staying permanently
+        // disabled from the earlier connection (see updateConnectButton()).
+        if (state.connected && (newOwner !== state.owner || newRepo !== state.repo)) {
+          state.connected = false;
+        }
+        state.owner = newOwner;
+        state.repo = newRepo;
         state.defaultBranch = opt.getAttribute("data-branch") || "main";
         state.creatingNew = false;
         $("#newRepoName").value = "";
@@ -97,6 +107,9 @@
     });
     $("#newRepoName").addEventListener("input", function (e) {
       if (e.target.value.trim()) {
+        // Typing a brand-new repo name is also switching targets — same
+        // reasoning as the repoSelect branch above.
+        if (state.connected) state.connected = false;
         state.creatingNew = true;
         state.owner = null;
         state.repo = null;
