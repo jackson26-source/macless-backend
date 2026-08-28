@@ -3,6 +3,7 @@
   var state = {
     scan: null,
     secretValues: {}, // name -> { kind, value (text) or base64 (file) }
+    autoFilled: {}, // name -> true, for fields Macless generated via auto-sign
     workflowFile: null,
     login: null,
     repos: [],
@@ -215,10 +216,20 @@
     var isSecretText = s.kind === "secret-text";
     var isManual = s.kind === "manual-elsewhere";
     var usedByHint = s.usedBy && s.usedBy.length ? '<p class="hint" style="margin:2px 0 6px;">used by: ' + escapeHtml(s.usedBy.join(", ")) + "</p>" : "";
-    wrap.innerHTML =
+    var labelHtml =
       "<label>" + escapeHtml(s.label || s.name) + ' <span class="mono hint">' + escapeHtml(s.name) +
-      "</span> <span class=\"mono hint\">(" + (s.scope === "variable" ? "variable" : "secret") + ")</span></label>" +
-      usedByHint +
+      "</span> <span class=\"mono hint\">(" + (s.scope === "variable" ? "variable" : "secret") + ")</span></label>";
+
+    if (state.autoFilled && state.autoFilled[s.name]) {
+      wrap.innerHTML =
+        labelHtml + usedByHint +
+        '<p class="hint"><span class="status-badge ok">auto-generated</span> by Macless — ' +
+        '<a href="#" data-clear-auto="' + s.name + '">use my own instead</a></p>';
+      return wrap;
+    }
+
+    wrap.innerHTML =
+      labelHtml + usedByHint +
       (isFile
         ? '<input type="file" data-secret="' + s.name + '" data-kind="file" data-scope="' + s.scope + '">'
         : isManual
@@ -226,6 +237,16 @@
         : '<input type="' + (isSecretText ? "password" : "text") + '" data-secret="' + s.name + '" data-kind="text" data-scope="' + s.scope + '">');
     return wrap;
   }
+
+  document.addEventListener("click", function (e) {
+    var link = e.target.closest("[data-clear-auto]");
+    if (!link) return;
+    e.preventDefault();
+    var name = link.getAttribute("data-clear-auto");
+    if (state.autoFilled) delete state.autoFilled[name];
+    delete state.secretValues[name];
+    renderSecretFields();
+  });
 
   function renderSecretFields() {
     var el = $("#secretFields");
@@ -251,7 +272,82 @@
 
     var hasSigningFields = state.scan.secrets.some(function (s) { return /PROFILE|MOBILEPROVISION|CERT|KEYSTORE/i.test(s.name); });
     $("#signingDoctorCard").style.display = hasSigningFields ? "block" : "none";
+    // Auto-sign only covers iOS (cert/profile), not Android keystores —
+    // only show it when there's actually a cert/profile field it could fill.
+    var hasIosSigningFields = state.scan.secrets.some(function (s) { return /PROFILE|MOBILEPROVISION|CERT/i.test(s.name); });
+    $("#autoSignCard").style.display = hasIosSigningFields ? "block" : "none";
   }
+
+  // ---- Auto-sign: generate a cert/profile/.p12 via the buyer's own Apple API key ----
+  var AUTO_SIGN_FIELD_PATTERNS = {
+    p12: /CERT.*BASE64|DIST.*CERT/i,
+    p12Password: /CERT.*PASS|P12.*PASS/i,
+    profile: /PROFILE|MOBILEPROVISION/i,
+    teamId: /TEAM_?ID/i,
+  };
+
+  function applyAutoSignResult(result) {
+    if (!state.scan || !state.scan.secrets) return;
+    state.autoFilled = state.autoFilled || {};
+    state.scan.secrets.forEach(function (s) {
+      if (AUTO_SIGN_FIELD_PATTERNS.p12.test(s.name)) {
+        state.secretValues[s.name] = { kind: "file-base64", scope: s.scope, base64: result.p12Base64, filename: "signing.p12" };
+        state.autoFilled[s.name] = true;
+      } else if (AUTO_SIGN_FIELD_PATTERNS.p12Password.test(s.name)) {
+        state.secretValues[s.name] = { kind: "text", scope: s.scope, value: result.p12Password };
+        state.autoFilled[s.name] = true;
+      } else if (AUTO_SIGN_FIELD_PATTERNS.profile.test(s.name)) {
+        state.secretValues[s.name] = { kind: "file-base64", scope: s.scope, base64: result.profileBase64, filename: "profile.mobileprovision" };
+        state.autoFilled[s.name] = true;
+      } else if (AUTO_SIGN_FIELD_PATTERNS.teamId.test(s.name)) {
+        state.secretValues[s.name] = { kind: "text", scope: s.scope, value: result.teamId };
+        state.autoFilled[s.name] = true;
+      }
+    });
+  }
+
+  function readFileAsText(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  }
+
+  $("#autoSignBtn") && $("#autoSignBtn").addEventListener("click", async function () {
+    var statusEl = $("#autoSignStatus");
+    var btn = $("#autoSignBtn");
+    var keyId = $("#autoSignKeyId").value.trim();
+    var issuerId = $("#autoSignIssuerId").value.trim();
+    var bundleId = $("#autoSignBundleId").value.trim();
+    var file = $("#autoSignP8File").files[0];
+
+    if (!keyId || !issuerId || !bundleId || !file) {
+      statusEl.innerHTML = '<p class="empty-state">Fill in the Key ID, Issuer ID, bundle identifier, and choose your .p8 file first.</p>';
+      return;
+    }
+
+    btn.disabled = true;
+    statusEl.innerHTML = '<p class="hint">Talking to Apple’s API — this can take a few seconds…</p>';
+    try {
+      var p8Pem = await readFileAsText(file);
+      var result = await api("/api/auto-sign", {
+        method: "POST",
+        body: JSON.stringify({ keyId: keyId, issuerId: issuerId, p8Pem: p8Pem, bundleIdentifier: bundleId }),
+      });
+      if (!result.ok) {
+        statusEl.innerHTML = '<p class="empty-state">' + escapeHtml(result.detail || "Something went wrong.") + "</p>";
+      } else {
+        applyAutoSignResult(result);
+        renderSecretFields();
+        statusEl.innerHTML = '<p class="hint">Done — certificate and profile generated and filled in below. Review them, then continue.</p>';
+      }
+    } catch (e) {
+      statusEl.innerHTML = '<p class="empty-state">Something went wrong talking to Apple’s API. Try again in a moment.</p>';
+    }
+    btn.disabled = false;
+  });
 
   // ---- Signing Doctor (checks whatever cert/profile/keystore fields have been filled in above) ----
   function findSecretValueByPattern(pattern) {
