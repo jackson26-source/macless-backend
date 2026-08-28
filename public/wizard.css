@@ -34,7 +34,7 @@ header.site{ padding: 24px 0; border-bottom: 1px solid var(--border); }
 .step-dot.done{ background: var(--ok); }
 .step-dot.active{ background: var(--accent); }
 
-main{ padding: 20px 0 80px; }
+main{ padding: 20px 0 120px; }
 .panel{ display:none; }
 .panel.active{ display:block; }
 
@@ -47,7 +47,7 @@ p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-
 .btn:disabled{ opacity: .45; cursor: not-allowed; }
 .btn-secondary{ background: transparent; color: var(--text); border: 1px solid var(--border); }
 .btn-secondary:hover{ background: var(--bg-panel); }
-.btn-row{ display:flex; gap: 12px; margin-top: 28px; }
+.btn-row{ display:flex; gap: 12px; margin-top: 28px; margin-bottom: 24px; }
 
 .card{ margin: 16px 0; padding: 20px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }
 .card h3{ font-size: 15px; margin-bottom: 8px; }
