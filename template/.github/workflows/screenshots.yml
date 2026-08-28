@@ -1,0 +1,134 @@
+name: App Store screenshots (required sizes)
+
+# Generates the screenshot sizes Apple actually requires at submission time
+# — a 6.9" iPhone shot and a 13" iPad shot (as of Apple's current
+# screenshot specification; see APP_STORE_SUBMISSION.md) — by running your
+# UNSIGNED debug build in the iOS Simulator at those exact device classes.
+# Same zero-signing approach as simulator-preview.yml, just aimed at
+# device sizes Apple will actually accept rather than a single quick
+# preview. Manual-only (not on every push) since it boots two full
+# Simulator instances and isn't something you need on every commit.
+#
+# Apple auto-scales screenshots down from the largest size you provide in
+# a given family (see APP_STORE_SUBMISSION.md), so these two sizes cover
+# both mandatory categories on their own — you don't need every size in
+# the chart to submit.
+on:
+  workflow_dispatch:
+
+# Least-privilege default: this workflow only builds and uploads a screenshot
+# artifact — it never needs to write back to the repo.
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    # Uses GitHub's standard free macOS runner by default. If your GitHub
+    # plan has larger/Apple-Silicon runners enabled (GitHub Team or
+    # Enterprise Cloud — see TROUBLESHOOTING.md "Faster Mac builds"),
+    # set the repo/org variable IOS_RUNNER_LABEL (e.g. to macos-26-xlarge)
+    # to use it instead, no workflow edit required. Unset = unchanged
+    # default behavior.
+    runs-on: ${{ vars.IOS_RUNNER_LABEL || 'macos-15' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "iphone-6.9in"
+            device_query: "iPhone 16 Pro Max"
+          - label: "ipad-13in"
+            device_query: "iPad Pro 13-inch (M4)"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods/repos
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('**/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cocoapods-
+
+      - name: Install JS dependencies
+        run: npm install
+
+      - name: Add + sync the iOS platform (generates ios/ from Capacitor's template)
+        run: |
+          npx cap add ios
+          npx cap sync ios
+
+      - name: Build for Simulator (unsigned — no certificate needed)
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$RUNNER_TEMP/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Boot the ${{ matrix.label }} Simulator
+        run: |
+          DEVICE_ID=$(xcrun simctl list devices available | grep -m1 "${{ matrix.device_query }}" | grep -oE '[0-9A-F-]{36}' || true)
+
+          if [ -z "$DEVICE_ID" ]; then
+            echo "::warning::No simulator matching '${{ matrix.device_query }}' is available on this runner image. Devices actually available:"
+            xcrun simctl list devices available
+            echo "::error::Stopping rather than silently grabbing the wrong device — Apple's device lineup and Xcode's bundled Simulators shift over time. Update the device_query in this workflow's matrix to whatever's actually listed above, then re-run."
+            exit 1
+          fi
+
+          echo "Booting: $DEVICE_ID"
+          echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+      - name: Install + launch the app
+        run: |
+          APP_PATH=$(find "$RUNNER_TEMP/build/Build/Products" -maxdepth 2 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app product found — build step must have failed silently."
+            exit 1
+          fi
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist")
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+          xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID"
+          # Give the app time to finish launching and render its real
+          # first screen — this matters more here than in the quick
+          # preview workflow, since these screenshots are meant to be
+          # submission-usable, not just a sanity check.
+          sleep 8
+
+      - name: Screenshot
+        run: |
+          mkdir -p "$RUNNER_TEMP/screenshots"
+          xcrun simctl io "$DEVICE_ID" screenshot "$RUNNER_TEMP/screenshots/${{ matrix.label }}.png"
+
+      - name: Upload screenshot as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-${{ matrix.label }}
+          path: ${{ runner.temp }}/screenshots/${{ matrix.label }}.png
+          retention-days: 30

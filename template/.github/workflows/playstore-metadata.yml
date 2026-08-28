@@ -1,0 +1,51 @@
+name: Push Play Store metadata (fastlane supply)
+
+# Optional. Pushes your Play Console listing text (title, descriptions,
+# changelogs) and images (screenshots, feature graphic, icon) from
+# fastlane/metadata/android/ in this repo — it does NOT touch your
+# APK/AAB or any release track (that's android-build.yml's job,
+# unchanged).
+#
+# Requires fastlane/metadata/android/<locale>/ to actually exist with
+# your real content first — see STORE_METADATA.md.
+on:
+  workflow_dispatch:
+    inputs:
+      validate_only:
+        description: "Dry run — check everything without actually publishing changes"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  push-metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm metadata folder exists before doing anything
+        run: |
+          if [ ! -d "fastlane/metadata/android" ]; then
+            echo "::error::fastlane/metadata/android/ doesn't exist in this repo yet. See STORE_METADATA.md — copy fastlane/Fastfile from this template, then create fastlane/metadata/android/<locale>/ with your real listing text before running this workflow."
+            exit 1
+          fi
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      # ---- Same Play Console service account you already generated for
+      # android-build.yml's Play Store upload step — nothing new to
+      # create in Play Console for this.
+      - name: Run fastlane supply
+        env:
+          ANDROID_PACKAGE_NAME: ${{ vars.ANDROID_PACKAGE_NAME }}
+          ANDROID_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.ANDROID_PLAY_SERVICE_ACCOUNT_JSON }}
+          SUPPLY_VALIDATE_ONLY: ${{ inputs.validate_only }}
+        run: bundle exec fastlane android push_metadata

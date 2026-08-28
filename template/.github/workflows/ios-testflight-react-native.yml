@@ -1,0 +1,302 @@
+name: Build and upload to TestFlight (bare React Native)
+
+# For a bare (non-Capacitor) React Native project — i.e. one created with
+# `npx @react-native-community/cli init` that already has a real ios/
+# folder checked into the repo, rather than one generated on the fly.
+# If your project uses Capacitor instead, use ios-testflight.yml, not this
+# file — don't add both.
+#
+# Runs entirely on GitHub's free-for-public-repos macOS runners — no
+# rented or owned Mac involved. Triggers on every push to main; you can
+# also run it by hand from the Actions tab (workflow_dispatch).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least-privilege default: this workflow only builds/signs/uploads — it never
+# needs to write back to the repo, so GITHUB_TOKEN doesn't need write access.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Uses GitHub's standard free macOS runner by default. If your GitHub
+    # plan has larger/Apple-Silicon runners enabled (GitHub Team or
+    # Enterprise Cloud — see TROUBLESHOOTING.md "Faster Mac builds"),
+    # set the repo/org variable IOS_RUNNER_LABEL (e.g. to macos-26-xlarge)
+    # to use it instead, no workflow edit required. Unset = unchanged
+    # default behavior.
+    runs-on: ${{ vars.IOS_RUNNER_LABEL || 'macos-15' }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- React Native 0.81+ raised the minimum supported Xcode to
+      # 16.1, and there's a known compatibility gap between RN 0.83.x and
+      # Xcode 26.0 (see TROUBLESHOOTING.md). Pin an explicit version here
+      # via the IOS_XCODE_VERSION repo variable if you hit build errors
+      # that don't reproduce locally — "latest-stable" is usually right,
+      # but isn't guaranteed to be the version your RN version was tested
+      # against.
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ vars.IOS_XCODE_VERSION || 'latest-stable' }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # ---- Caching: shaves a couple minutes off repeat runs. Neither
+      # cache is required for correctness — if a key misses, npm install /
+      # pod install just run for real, same as before this was added.
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods/repos
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cocoapods-
+
+      - name: Install JS dependencies
+        run: npm install
+
+      # ---- Unlike Capacitor, a bare RN project's ios/ folder is real,
+      # checked-in source — there's no "generate it" step. This just
+      # installs the pods it already declares. Uses `bundle exec` (a
+      # Ruby-Gemfile-pinned CocoaPods) rather than a bare `pod install`,
+      # which is the current RN-community-recommended pattern to avoid
+      # CocoaPods-version drift between your machine and this runner. If
+      # your project doesn't have a Gemfile yet, `bundle install` first —
+      # see TROUBLESHOOTING.md.
+      #
+      # If you've turned on React Native's New Architecture, set the
+      # IOS_NEW_ARCHITECTURE repo variable to "1" — this passes
+      # RCT_NEW_ARCH_ENABLED=1 into pod install, which the New
+      # Architecture needs to generate the right codegen artifacts.
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        env:
+          RCT_NEW_ARCH_ENABLED: ${{ vars.IOS_NEW_ARCHITECTURE }}
+        run: bundle exec pod install || pod install
+
+      # ---- Code signing: everything below reads from GitHub Actions
+      # secrets and variables you set once in the repo's Settings >
+      # Secrets and variables > Actions. See SIGNING.md for how to
+      # generate each of these without ever opening Xcode — this part is
+      # identical regardless of which workflow variant you're using.
+      - name: Import signing certificate + provisioning profile
+        env:
+          CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          APP_PROFILE_BASE64: ${{ secrets.IOS_APP_PROVISION_PROFILE_BASE64 }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$APP_PROFILE_BASE64" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/app.mobileprovision"
+
+          echo "----- codesigning identities available in keychain -----"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+
+          echo "----- app.mobileprovision (decoded) -----"
+          security cms -D -i "$HOME/Library/MobileDevice/Provisioning Profiles/app.mobileprovision" > "$RUNNER_TEMP/app_profile.plist" 2>/dev/null || echo "FAILED TO DECODE app.mobileprovision"
+          grep -A1 "<key>Name</key>" "$RUNNER_TEMP/app_profile.plist" || true
+          grep -A1 "<key>UUID</key>" "$RUNNER_TEMP/app_profile.plist" || true
+          grep -A3 "<key>TeamIdentifier</key>" "$RUNNER_TEMP/app_profile.plist" || true
+          grep -A1 "<key>application-identifier</key>" "$RUNNER_TEMP/app_profile.plist" || true
+          grep -A3 "<key>ExpirationDate</key>" "$RUNNER_TEMP/app_profile.plist" || true
+
+      # ---- Runs the same signing-doctor.sh diagnostic that
+      # generate_signing_secrets.sh offers to run locally at the end of
+      # setup — but locally that only works on a Mac (security cms,
+      # PlistBuddy are macOS-only, and .mobileprovision is a proprietary
+      # Apple CMS format with no cross-platform decoder). Running it here
+      # instead means every buyer gets this diagnostic automatically, on
+      # Apple's own macOS runner, regardless of what OS they develop on.
+      # It also catches profile/cert expiry and cert-profile mismatches
+      # that the "Validate signing setup" step below doesn't check for —
+      # see signing-doctor.sh's own header comment.
+      - name: Run Signing Doctor
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+          CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/jackson26-source/macless-signing-doctor/main/signing-doctor.sh" -o "$RUNNER_TEMP/signing-doctor.sh"
+          chmod +x "$RUNNER_TEMP/signing-doctor.sh"
+          "$RUNNER_TEMP/signing-doctor.sh" \
+            --profile "$HOME/Library/MobileDevice/Provisioning Profiles/app.mobileprovision" \
+            --expected-team-id "$APPLE_TEAM_ID" \
+            --expected-bundle-id "$IOS_BUNDLE_ID" \
+            --cert "$RUNNER_TEMP/cert.p12" \
+            --cert-password "$CERT_PASSWORD"
+
+      # ---- Fails fast with a specific, actionable message instead of
+      # letting a signing mismatch surface as a cryptic xcodebuild error
+      # deep in the Archive step below. Identical logic to the Capacitor
+      # variant — this part doesn't depend on which framework you're
+      # using, only on the cert/profile/secrets being consistent.
+      - name: Validate signing setup
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+        run: |
+          PLIST_PATH="$RUNNER_TEMP/app_profile.plist"
+
+          if [ ! -s "$PLIST_PATH" ]; then
+            echo "::error::Couldn't decode the provisioning profile at all in the previous step. IOS_APP_PROVISION_PROFILE_BASE64 is likely not a valid base64-encoded .mobileprovision file — re-check SIGNING.md steps 4-5 (make sure you base64'd the .mobileprovision file itself, not the .cer or .p12)."
+            exit 1
+          fi
+
+          PROFILE_TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print :TeamIdentifier:0" "$PLIST_PATH" 2>/dev/null || echo "")
+          PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$PLIST_PATH" 2>/dev/null || echo "")
+          PROFILE_BUNDLE_ID="${PROFILE_APP_ID#*.}"
+          PROFILE_EXPIRY=$(/usr/libexec/PlistBuddy -c "Print :ExpirationDate" "$PLIST_PATH" 2>/dev/null || echo "(couldn't read)")
+
+          echo "Profile Team ID:   ${PROFILE_TEAM_ID:-(couldn't read)}"
+          echo "Profile Bundle ID: ${PROFILE_BUNDLE_ID:-(couldn't read)}"
+          echo "Profile expires:   $PROFILE_EXPIRY"
+
+          FAILED=0
+
+          if [ -z "$PROFILE_TEAM_ID" ]; then
+            echo "::warning::Couldn't read a Team ID out of the profile — skipping that specific check, but this itself usually means the profile didn't decode cleanly."
+          elif [ "$PROFILE_TEAM_ID" != "$APPLE_TEAM_ID" ]; then
+            echo "::error::Provisioning profile's Team ID ($PROFILE_TEAM_ID) doesn't match your APPLE_TEAM_ID secret ($APPLE_TEAM_ID). You've likely uploaded a profile from a different Apple Developer team, or copied the wrong value into APPLE_TEAM_ID. Find your real Team ID at developer.apple.com/account under Membership."
+            FAILED=1
+          fi
+
+          if [ -z "$PROFILE_BUNDLE_ID" ]; then
+            echo "::warning::Couldn't read a bundle ID out of the profile — skipping that specific check."
+          elif [ "$PROFILE_BUNDLE_ID" != "$IOS_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
+            echo "::error::Provisioning profile's bundle ID ($PROFILE_BUNDLE_ID) doesn't match your IOS_BUNDLE_ID variable ($IOS_BUNDLE_ID). Double-check the App ID you created in SIGNING.md step 4 uses the exact same bundle ID you picked at the top of that guide, and that IOS_BUNDLE_ID (Settings > Secrets and variables > Actions > Variables) matches it exactly."
+            FAILED=1
+          fi
+
+          if [ "$FAILED" = "1" ]; then
+            echo "::error::Signing setup validation failed — stopping here so you get a specific reason instead of a generic xcodebuild failure. Fix the mismatch above, then push again."
+            exit 1
+          fi
+
+          echo "Signing setup looks consistent — proceeding to archive."
+
+      # ---- IOS_PROJECT_NAME is the one new thing this variant needs
+      # beyond the Capacitor template's variables: the RN CLI names both
+      # the .xcworkspace and the scheme after your project (e.g. a
+      # project named "MyApp" gets ios/MyApp.xcworkspace, scheme "MyApp")
+      # — set IOS_PROJECT_NAME to that exact name in Settings > Secrets
+      # and variables > Actions > Variables. If you've renamed the Xcode
+      # project since `react-native init`, use the current name, not the
+      # original one.
+      - name: Archive
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_PROVISIONING_PROFILE_NAME }}
+          IOS_PROJECT_NAME: ${{ vars.IOS_PROJECT_NAME }}
+        run: |
+          echo "----- signing-relevant build settings before archive -----"
+          xcodebuild -workspace "ios/${IOS_PROJECT_NAME}.xcworkspace" -scheme "$IOS_PROJECT_NAME" -configuration Release -showBuildSettings 2>/dev/null | grep -E "CODE_SIGN|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|PRODUCT_BUNDLE_IDENTIFIER" || true
+
+          xcodebuild -workspace "ios/${IOS_PROJECT_NAME}.xcworkspace" \
+            -scheme "$IOS_PROJECT_NAME" \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$IOS_PROVISIONING_PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            archive
+
+      - name: Write export options
+        env:
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+          IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_PROVISIONING_PROFILE_NAME }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+              <key>teamID</key>
+              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>provisioningProfiles</key>
+              <dict>
+                  <key>$IOS_BUNDLE_ID</key>
+                  <string>$IOS_PROVISIONING_PROFILE_NAME</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Export .ipa
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+
+      - name: Upload to TestFlight
+        env:
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          API_PRIVATE_KEY_BASE64: ${{ secrets.APPSTORE_API_PRIVATE_KEY_BASE64 }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$API_PRIVATE_KEY_BASE64" | base64 --decode > "$HOME/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
+          IPA_PATH=$(find "$RUNNER_TEMP/export" -name "*.ipa" | head -n 1)
+          xcrun altool --upload-app -f "$IPA_PATH" -t ios \
+            --apiKey "$API_KEY_ID" --apiIssuer "$API_ISSUER_ID"
+
+      # ---- Optional: reports build success/failure to a webhook (Discord's
+      # incoming-webhook JSON shape by default — for Slack, change the
+      # "content" key below to "text"). Does nothing at all if
+      # NOTIFY_WEBHOOK_URL isn't set.
+      - name: Notify webhook (optional)
+        if: always()
+        env:
+          WEBHOOK_URL: ${{ secrets.NOTIFY_WEBHOOK_URL }}
+          STATUS: ${{ job.status }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "NOTIFY_WEBHOOK_URL secret not set — skipping notification (this is optional, see README.md)."
+            exit 0
+          fi
+
+          if [ "$STATUS" = "success" ]; then
+            MSG="✅ Macless: TestFlight build #${{ github.run_number }} succeeded for ${{ github.repository }}."
+          else
+            MSG="❌ Macless: TestFlight build #${{ github.run_number }} failed for ${{ github.repository }}. Log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+          curl -s -X POST -H "Content-Type: application/json" \
+            -d "{\"content\": \"$MSG\"}" \
+            "$WEBHOOK_URL" || echo "Webhook POST failed (non-fatal — the build result above is unaffected)."

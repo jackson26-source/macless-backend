@@ -1,0 +1,7 @@
+# fastlane/Appfile — used by the iOS "push_metadata" lane.
+#
+# Fill in your own values (same bundle ID and team ID you already set up
+# in SIGNING.md — nothing new to generate here).
+
+app_identifier(ENV["IOS_BUNDLE_ID"] || "com.yourname.yourapp")
+team_id(ENV["APPLE_TEAM_ID"])

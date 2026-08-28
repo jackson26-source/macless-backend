@@ -1,0 +1,125 @@
+name: Simulator preview (no iPhone needed)
+
+# Builds an UNSIGNED build of your app and runs it in the iOS Simulator —
+# entirely inside the same free GitHub Actions macOS runner used by the
+# TestFlight workflow. No signing certificate, no provisioning profile, no
+# Apple Developer account even required for this one. It exists so you can
+# see your app actually running and grab a screenshot without owning an
+# iPhone or iPad.
+#
+# This is a sanity-check tool, not a substitute for real device testing —
+# the Simulator doesn't cover camera, push notifications, in-app purchases,
+# or exact on-device performance. But for "does the UI render, does the app
+# launch, does the main flow work" it's the real iOS runtime, not a mockup.
+#
+# Zero setup required — copy this file in and run it. Nothing in here reads
+# from secrets or vars.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least-privilege default: this workflow only builds and uploads a screenshot
+# artifact — it never needs to write back to the repo.
+permissions:
+  contents: read
+
+jobs:
+  simulator-preview:
+    # Uses GitHub's standard free macOS runner by default. If your GitHub
+    # plan has larger/Apple-Silicon runners enabled (GitHub Team or
+    # Enterprise Cloud — see TROUBLESHOOTING.md "Faster Mac builds"),
+    # set the repo/org variable IOS_RUNNER_LABEL (e.g. to macos-26-xlarge)
+    # to use it instead, no workflow edit required. Unset = unchanged
+    # default behavior.
+    runs-on: ${{ vars.IOS_RUNNER_LABEL || 'macos-15' }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            ~/.cocoapods/repos
+          key: ${{ runner.os }}-cocoapods-${{ hashFiles('**/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cocoapods-
+
+      - name: Install JS dependencies
+        run: npm install
+
+      - name: Add + sync the iOS platform (generates ios/ from Capacitor's template)
+        run: |
+          npx cap add ios
+          npx cap sync ios
+
+      - name: Build for Simulator (unsigned — no certificate needed)
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            -derivedDataPath "$RUNNER_TEMP/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Boot a Simulator
+        run: |
+          # Prefer a current iPhone model; fall back to whatever's first
+          # available if the runner's image doesn't have that exact one.
+          DEVICE_ID=$(xcrun simctl list devices available | grep -m1 "iPhone 16" | grep -oE '[0-9A-F-]{36}' || true)
+          if [ -z "$DEVICE_ID" ]; then
+            DEVICE_ID=$(xcrun simctl list devices available | grep -m1 -oE '[0-9A-F-]{36}')
+          fi
+          echo "Booting simulator device: $DEVICE_ID"
+          echo "DEVICE_ID=$DEVICE_ID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$DEVICE_ID"
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+      - name: Install + launch the app
+        run: |
+          APP_PATH=$(find "$RUNNER_TEMP/build/Build/Products" -maxdepth 2 -name "*.app" | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app product found under $RUNNER_TEMP/build/Build/Products — build step must have failed silently."
+            exit 1
+          fi
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist")
+          echo "Installing $APP_PATH ($BUNDLE_ID)"
+          xcrun simctl install "$DEVICE_ID" "$APP_PATH"
+          xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID"
+          # Give the app a few seconds to finish launching and render its
+          # first real screen before the screenshot is taken.
+          sleep 6
+
+      - name: Screenshot
+        run: |
+          mkdir -p "$RUNNER_TEMP/screenshots"
+          xcrun simctl io "$DEVICE_ID" screenshot "$RUNNER_TEMP/screenshots/preview.png"
+
+      - name: Upload screenshot as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulator-preview
+          path: ${{ runner.temp }}/screenshots/preview.png
+          retention-days: 14

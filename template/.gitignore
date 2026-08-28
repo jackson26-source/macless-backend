@@ -1,0 +1,16 @@
+# Signing material — generated locally per SIGNING.md / ANDROID.md, never
+# committed. GitHub Actions gets these as base64-encoded repo secrets, not
+# files. This backstop exists in case any of it ever ends up inside your
+# project directory instead of a scratch folder outside it.
+*.p12
+*.key
+*.cer
+*.pem
+*.mobileprovision
+*.keystore
+*.jks
+*_base64.txt
+
+# Common local cruft
+.DS_Store
+node_modules/

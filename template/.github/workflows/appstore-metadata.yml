@@ -1,0 +1,53 @@
+name: Push App Store metadata (fastlane deliver)
+
+# Optional. Pushes your App Store Connect listing text (description,
+# keywords, release notes, etc.) and screenshots from fastlane/metadata/
+# and fastlane/screenshots/ in this repo — it does NOT build, sign, or
+# upload a binary (that's ios-testflight*.yml's job, unchanged), and it
+# does NOT submit your app for review. Run it by hand whenever your
+# listing copy or screenshots change, instead of clicking through App
+# Store Connect's UI.
+#
+# Requires fastlane/metadata/<locale>/ (and, if you want to push
+# screenshots too, fastlane/screenshots/<locale>/) to actually exist with
+# your real content first — see STORE_METADATA.md. Running this with
+# those folders empty/missing will fail fast rather than silently wipe
+# your live listing.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  push-metadata:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm metadata folder exists before doing anything
+        run: |
+          if [ ! -d "fastlane/metadata" ]; then
+            echo "::error::fastlane/metadata/ doesn't exist in this repo yet. See STORE_METADATA.md — copy fastlane/Fastfile and fastlane/Appfile from this template, then create fastlane/metadata/<locale>/ with your real listing text before running this workflow."
+            exit 1
+          fi
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+
+      # ---- Same credentials you already generated for
+      # ios-testflight*.yml's TestFlight upload step — nothing new to
+      # create in App Store Connect for this.
+      - name: Run fastlane deliver
+        env:
+          APPSTORE_API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          APPSTORE_API_ISSUER_ID: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+          APPSTORE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPSTORE_API_PRIVATE_KEY_BASE64 }}
+          IOS_BUNDLE_ID: ${{ vars.IOS_BUNDLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bundle exec fastlane ios push_metadata

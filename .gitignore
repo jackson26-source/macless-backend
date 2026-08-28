@@ -1,0 +1,4 @@
+node_modules/
+.wrangler/
+src/lib/template-files.generated.js
+src/lib/public-embed.generated.js

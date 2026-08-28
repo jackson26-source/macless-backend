@@ -1,0 +1,162 @@
+name: Build and upload to Google Play
+
+# Android equivalent of ios-testflight.yml — builds a signed Android App
+# Bundle (.aab) from the same Capacitor project and uploads it to Google
+# Play. Runs on a standard Ubuntu runner (not macOS), which is both
+# faster and well within GitHub's free minutes even on a private repo,
+# since Android builds don't need the 10x macOS-runner multiplier iOS
+# builds do. Entirely optional — skip this file if you're only shipping
+# to the App Store. See ANDROID.md for the one-time setup.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Least-privilege default: this workflow only builds/signs/uploads — it never
+# needs to write back to the repo, so GITHUB_TOKEN doesn't need write access.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Capacitor 7's Android Gradle template targets Java 21 source/
+      # target compatibility — JDK 17 here fails compileReleaseJavaWithJavac
+      # with "invalid source release: 21".
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # ---- Fails fast, before spending any of the ~30-minute build on a
+      # keystore that won't work. Same signing-doctor.sh the iOS workflow
+      # now runs (and the same tool generate_signing_secrets.sh already
+      # offers to run locally) — Android's checks only need keytool/
+      # openssl, which work on any OS including a non-Mac customer's own
+      # machine, so this isn't closing a "can't run this at all" gap the
+      # way the iOS version does. It's just moving the same check earlier
+      # in CI, so a bad keystore/password/alias fails in seconds instead
+      # of after a full Gradle build.
+      - name: Run Signing Doctor
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. See ANDROID.md for the one-time keystore setup."
+            exit 1
+          fi
+
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/signing-doctor-check.keystore"
+
+          curl -fsSL "https://raw.githubusercontent.com/jackson26-source/macless-signing-doctor/main/signing-doctor.sh" -o "$RUNNER_TEMP/signing-doctor.sh"
+          chmod +x "$RUNNER_TEMP/signing-doctor.sh"
+          "$RUNNER_TEMP/signing-doctor.sh" \
+            --android-keystore "$RUNNER_TEMP/signing-doctor-check.keystore" \
+            --android-keystore-password "$ANDROID_KEYSTORE_PASSWORD" \
+            --android-key-alias "$ANDROID_KEY_ALIAS" \
+            --android-key-password "$ANDROID_KEY_PASSWORD"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-modules-
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install JS dependencies
+        run: npm install
+
+      - name: Add + sync the Android platform (generates android/ from Capacitor's template)
+        run: |
+          # `npx cap add android` fails with "Could not find the android
+          # platform" unless @capacitor/android is already an installed
+          # dependency — Capacitor 5+ ships each platform as a separate
+          # npm package rather than bundling it into @capacitor/cli. Most
+          # projects only have @capacitor/ios if they set up iOS first
+          # (per SIGNING.md), so install this before adding the platform.
+          # Must match the project's existing @capacitor/core major
+          # version exactly (they're peer-dependency locked) — installing
+          # @latest here breaks the build the moment your project isn't
+          # also on the newest Capacitor major version.
+          CORE_VERSION=$(node -p "require('./node_modules/@capacitor/core/package.json').version")
+          CORE_MAJOR=$(echo "$CORE_VERSION" | cut -d. -f1)
+          npm install "@capacitor/android@^${CORE_MAJOR}.0.0"
+          npx cap add android
+          npx cap sync android
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Build unsigned release AAB
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew bundleRelease
+
+      # ---- Signing happens AFTER the build, directly on the .aab file
+      # with jarsigner — the same idea as the iOS workflow signing via
+      # xcodebuild flags rather than editing the Xcode project. Nothing
+      # about signing ever gets written into the Capacitor-generated
+      # android/ project itself, since `npx cap add android` regenerates
+      # that project from scratch on every run.
+      - name: Sign the AAB
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set. See ANDROID.md for the one-time keystore setup."
+            exit 1
+          fi
+
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+
+          AAB_PATH=$(find android/app/build/outputs/bundle/release -maxdepth 1 -name "*.aab" | head -n 1)
+          if [ -z "$AAB_PATH" ]; then
+            echo "::error::No .aab found under android/app/build/outputs/bundle/release — the bundleRelease step must have failed silently."
+            exit 1
+          fi
+
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore "$RUNNER_TEMP/release.keystore" -storepass "$KEYSTORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            "$AAB_PATH" "$KEY_ALIAS"
+
+          echo "----- verifying signature -----"
+          jarsigner -verify "$AAB_PATH"
+
+          echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
+
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.ANDROID_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ vars.ANDROID_PACKAGE_NAME }}
+          releaseFiles: ${{ env.AAB_PATH }}
+          track: ${{ vars.ANDROID_PLAY_TRACK || 'internal' }}
+          status: completed

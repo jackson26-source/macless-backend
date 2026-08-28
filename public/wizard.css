@@ -1,0 +1,102 @@
+/* Adapted from macless-site's assets/site.css design tokens, so this feels
+   like the rest of macless.dev rather than a generic admin-tool UI. */
+:root{
+  --bg: #faf8f3;
+  --bg-panel: #f2efe6;
+  --border: #e2ddd0;
+  --text: #24211c;
+  --text-dim: #6b6558;
+  --text-faint: #948d7c;
+  --accent: #a8461e;
+  --accent-ink: #ffffff;
+  --code-bg: #eeeae0;
+  --ok: #2f6b3a;
+  --warn: #a8791e;
+  --fail: #a8461e;
+  --serif: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --mono: 'SF Mono', Menlo, Consolas, monospace;
+}
+*{ box-sizing:border-box; margin:0; padding:0; }
+body{ background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 16px; line-height: 1.6; }
+.wrap{ max-width: 760px; margin: 0 auto; padding: 0 24px; }
+code, .mono{ font-family: var(--mono); }
+h1, h2{ font-family: var(--serif); font-weight: 700; }
+
+header.site{ padding: 24px 0; border-bottom: 1px solid var(--border); }
+.site-inner{ display:flex; align-items:center; justify-content:space-between; max-width:760px; margin:0 auto; padding:0 24px; }
+.wordmark{ font-family: var(--serif); font-weight:700; font-size:18px; }
+.repo-path{ font-family: var(--mono); font-size: 12.5px; color: var(--text-faint); }
+
+/* ---- step progress ---- */
+.steps-nav{ display:flex; gap: 6px; padding: 18px 0; }
+.step-dot{ flex:1; height: 4px; border-radius: 2px; background: var(--border); }
+.step-dot.done{ background: var(--ok); }
+.step-dot.active{ background: var(--accent); }
+
+main{ padding: 20px 0 80px; }
+.panel{ display:none; }
+.panel.active{ display:block; }
+
+h1.step-title{ font-size: 26px; margin-bottom: 10px; }
+p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-width: 560px; }
+
+.btn{ display:inline-block; padding: 12px 20px; border-radius: 6px; font-weight:600; font-size:14.5px;
+  text-decoration:none; cursor:pointer; border: 1px solid transparent; background: var(--text); color: #fdfcf9; }
+.btn:hover{ background: var(--accent); }
+.btn:disabled{ opacity: .45; cursor: not-allowed; }
+.btn-secondary{ background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn-secondary:hover{ background: var(--bg-panel); }
+.btn-row{ display:flex; gap: 12px; margin-top: 28px; }
+
+.card{ margin: 16px 0; padding: 20px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }
+.card h3{ font-size: 15px; margin-bottom: 8px; }
+.card p{ color: var(--text-dim); font-size: 14.5px; }
+
+.field{ margin-bottom: 18px; }
+.field label{ display:block; font-size: 13px; font-weight:600; color: var(--text-dim); margin-bottom: 6px; }
+.field .hint{ font-size: 12.5px; color: var(--text-faint); margin-top: 4px; }
+.field input[type="text"], .field input[type="password"], .field textarea{
+  width:100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: #fff; font-family: var(--sans); font-size: 14.5px; color: var(--text);
+}
+.field input[type="file"]{ font-size: 13.5px; }
+.field select{
+  width:100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: #fff; font-family: var(--sans); font-size: 14.5px; color: var(--text);
+}
+.field label.checkbox{ display:flex; align-items:center; gap:8px; font-weight:400; }
+.field label.checkbox input{ width:auto; }
+.divider{ display:flex; align-items:center; gap:12px; color: var(--text-faint); font-size:12.5px; margin: 18px 0; text-transform:uppercase; letter-spacing:.04em; }
+.divider::before, .divider::after{ content:""; flex:1; height:1px; background: var(--border); }
+.field textarea{ min-height: 120px; font-family: var(--mono); font-size: 13px; resize: vertical; }
+
+.status-line{ display:flex; align-items:center; gap: 10px; padding: 10px 0; font-size: 14px; border-bottom: 1px solid var(--border); }
+.status-line:last-child{ border-bottom: none; }
+.status-badge{ font-size: 11px; font-weight:700; letter-spacing:.03em; padding: 2px 8px; border-radius: 10px; text-transform:uppercase; }
+.status-badge.ok{ background: rgba(47,107,58,.12); color: var(--ok); }
+.status-badge.warn{ background: rgba(168,121,30,.12); color: var(--warn); }
+.status-badge.fail{ background: rgba(168,70,30,.12); color: var(--fail); }
+.status-badge.pending{ background: var(--border); color: var(--text-faint); }
+
+.log-output{ background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px;
+  font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; max-height: 320px; overflow-y:auto; margin-top: 12px; }
+
+.rd-match{ margin: 18px 0; padding: 18px 20px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+.rd-guideline{ font-size: 12px; color: var(--text-faint); text-transform:uppercase; letter-spacing:.04em; margin-bottom: 4px; }
+.rd-match h3{ font-size: 16px; margin-bottom: 8px; }
+.rd-match p{ font-size: 14px; color: var(--text-dim); margin-bottom: 8px; }
+.rd-label{ font-weight:600; color: var(--text); }
+
+.secret-list{ display:flex; flex-direction:column; gap: 4px; }
+.secret-row{ display:flex; align-items:center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+.secret-row:last-child{ border-bottom:none; }
+.secret-row .name{ font-family: var(--mono); font-size: 12.5px; color: var(--text-dim); }
+.secret-row .label{ flex:1; }
+
+.empty-state{ color: var(--text-faint); font-size: 14px; padding: 20px 0; }
+
+.advanced{ margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 4px 16px; background: var(--bg-panel); }
+.advanced summary{ cursor:pointer; padding: 12px 0; font-size: 13.5px; font-weight:600; color: var(--text-dim); }
+.advanced[open] summary{ margin-bottom: 4px; }
+.advanced .field{ margin-top: 14px; }

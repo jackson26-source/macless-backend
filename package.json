@@ -1,0 +1,20 @@
+{
+  "name": "macless-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Hosted Macless — buyer connects GitHub in the browser, no download, no terminal, no desktop app required.",
+  "type": "module",
+  "scripts": {
+    "build:template": "node scripts/build-template.js",
+    "build:public": "node scripts/build-public.js",
+    "build": "npm run build:template && npm run build:public",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "^0.7.13"
+  },
+  "devDependencies": {
+    "wrangler": "^4.126.0"
+  }
+}

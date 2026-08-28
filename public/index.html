@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Macless</title>
+<link rel="stylesheet" href="/app/wizard.css">
+</head>
+<body>
+
+<header class="site">
+  <div class="site-inner">
+    <div class="wordmark">macless</div>
+    <div class="repo-path" id="repoPath">not connected yet</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="steps-nav" id="stepsNav"></div>
+</div>
+
+<main class="wrap">
+
+  <!-- 1: connect (you're already signed in to GitHub by the time you land here — this step just picks/creates the repo) -->
+  <section class="panel" data-step="connect">
+    <h1 class="step-title">Connect your project</h1>
+    <p class="step-sub">You're signed in as <strong id="whoAmI">…</strong>. Pick the GitHub repo for the app you're shipping — everything happens through GitHub's API with your own account; nothing is ever downloaded or hosted anywhere else.</p>
+
+    <div class="card" id="repoCard">
+      <h3>Choose a repo</h3>
+      <div id="repoStatus"><p class="empty-state">Loading your repos…</p></div>
+    </div>
+
+    <div id="connectResult"></div>
+
+    <div class="btn-row">
+      <button class="btn" id="connectBtn" data-next="scan" disabled>Connect &amp; continue</button>
+    </div>
+  </section>
+
+  <!-- 2: scan -->
+  <section class="panel" data-step="scan">
+    <h1 class="step-title">What's in this repo</h1>
+    <p class="step-sub">Read directly from your <code>.github/workflows/</code> files — not a hardcoded list, so this always matches whatever version of the pipeline you actually have.</p>
+    <div id="scanResult"><p class="empty-state">Scanning…</p></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" data-next="connect">Back</button>
+      <button class="btn" id="toConfigure" data-next="configure" disabled>Continue</button>
+    </div>
+  </section>
+
+  <!-- 3: configure secrets -->
+  <section class="panel" data-step="configure">
+    <h1 class="step-title">Signing setup</h1>
+    <p class="step-sub">Fill in what each workflow needs. Signing Doctor also runs for real as the first step of your build on GitHub's own runners — this is just a faster way to catch a bad cert/profile pairing before you even push.</p>
+    <div id="secretFields"></div>
+    <div class="card" id="signingDoctorCard" style="display:none;">
+      <h3>Signing Doctor</h3>
+      <p>Checks the certificate/profile/keystore files above right here, before anything gets pushed — expiry, Team ID, bundle ID, and the one that's genuinely hard to spot by eye: whether your certificate and provisioning profile are actually a matching pair.</p>
+      <button class="btn btn-secondary" id="signingDoctorBtn">Check with Signing Doctor</button>
+      <div class="log-output" id="signingDoctorOutput" style="display:none;"></div>
+      <button class="btn" id="signingRebuildBtn" style="display:none; margin-top:12px;">Rebuild now</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" data-next="scan">Back</button>
+      <button class="btn" data-next="push">Continue</button>
+    </div>
+  </section>
+
+  <!-- 4: push secrets -->
+  <section class="panel" data-step="push">
+    <h1 class="step-title">Push to GitHub</h1>
+    <p class="step-sub">Sent directly via the GitHub API, using the account you connected — nothing passes through or is stored by Macless beyond an encrypted copy of your GitHub token.</p>
+    <div id="pushResult"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" data-next="configure">Back</button>
+      <button class="btn" id="pushBtn">Push secrets</button>
+      <button class="btn" data-next="build" id="toBuild" disabled>Continue</button>
+    </div>
+  </section>
+
+  <!-- 5: trigger + status -->
+  <section class="panel" data-step="build">
+    <h1 class="step-title">First build</h1>
+    <p class="step-sub">Runs on your own GitHub Actions minutes — this just triggers it and watches the result.</p>
+    <div id="buildControls"></div>
+    <div id="buildStatus"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" data-next="push">Back</button>
+      <button class="btn" data-next="rejection">Skip to Rejection Doctor</button>
+    </div>
+  </section>
+
+  <!-- 6: rejection doctor -->
+  <section class="panel" data-step="rejection">
+    <h1 class="step-title">Rejection Doctor</h1>
+    <p class="step-sub">If Apple sends back a rejection later, paste it here — same tool as macless.dev/rejection-doctor.html, built right in.</p>
+    <div class="field">
+      <textarea id="rdInput" placeholder="Paste Apple's rejection message here…"></textarea>
+    </div>
+    <button class="btn" id="rdBtn">Diagnose</button>
+    <div id="rdCount" class="hint" style="margin-top:12px;"></div>
+    <div id="rdResults"></div>
+    <div id="rejectionRebuildWrap" style="display:none; margin-top:16px;">
+      <p class="hint" style="margin-bottom:8px;">Already pushed the fix? Re-run the build to confirm it — no need to leave this page.</p>
+      <button class="btn" id="rejectionRebuildBtn">Rebuild now</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" data-next="build">Back</button>
+    </div>
+  </section>
+
+</main>
+
+<script src="/app/wizard.js"></script>
+</body>
+</html>

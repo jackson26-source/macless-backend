@@ -1,0 +1,6 @@
+# Pins fastlane so this workflow doesn't silently drift to a new major
+# version over time. Bump deliberately, then re-run the workflow to
+# confirm it still works before trusting it.
+source "https://rubygems.org"
+
+gem "fastlane"

@@ -1,0 +1,51 @@
+# fastlane/Fastfile — store metadata automation (App Store + Play Store)
+#
+# Part of the Macless template's optional "store metadata automation"
+# feature (see STORE_METADATA.md). This does NOT touch your build/sign
+# pipeline at all — ios-testflight*.yml and android-build.yml are
+# unchanged and still do the actual build+sign+upload. This file only
+# pushes text (description, keywords, release notes) and images
+# (screenshots, feature graphic) to App Store Connect / Play Console,
+# driven by the two *-metadata.yml workflows.
+#
+# Nothing in here runs unless you fill in fastlane/metadata/ (and,
+# for iOS, fastlane/screenshots/) with your own real content first —
+# see STORE_METADATA.md.
+
+default_platform(:ios)
+
+platform :ios do
+  desc "Push App Store Connect metadata + screenshots (no binary, no submission)"
+  lane :push_metadata do
+    app_store_connect_api_key(
+      key_id: ENV["APPSTORE_API_KEY_ID"],
+      issuer_id: ENV["APPSTORE_API_ISSUER_ID"],
+      key_content: ENV["APPSTORE_API_PRIVATE_KEY_BASE64"],
+      is_key_content_base64: true,
+      in_house: false
+    )
+
+    deliver(
+      app_identifier: ENV["IOS_BUNDLE_ID"],
+      skip_binary_upload: true,
+      skip_app_version_update: true,
+      submit_for_review: false,
+      force: true,
+      run_precheck_before_submit: false
+    )
+  end
+end
+
+platform :android do
+  desc "Push Play Console metadata + images (no APK/AAB, no track changes)"
+  lane :push_metadata do
+    supply(
+      package_name: ENV["ANDROID_PACKAGE_NAME"],
+      json_key_data: ENV["ANDROID_PLAY_SERVICE_ACCOUNT_JSON"],
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_changelogs: false,
+      validate_only: ENV["SUPPLY_VALIDATE_ONLY"] == "true"
+    )
+  end
+end

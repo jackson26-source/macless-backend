@@ -1,0 +1,39 @@
+name = "macless-backend"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Routes this Worker on the paths it owns; the rest of macless.dev stays
+# on whatever's already serving it (GitHub Pages, per the download-worker
+# setup). Requires the macless.dev zone to already be on Cloudflare,
+# which it is.
+routes = [
+  # Trailing * on these four: an exact-match route (no *) was empirically
+  # observed to miss any request carrying a query string (e.g. ?session_id=...)
+  # and fall through to the old GitHub Pages origin instead of this Worker,
+  # even though a bare request with no query string matched fine. All four
+  # of these need a query string (session_id, code, state) to function, so
+  # they all get the wildcard. Found + fixed 2026-08-26 during live testing.
+  { pattern = "macless.dev/get-started*", zone_name = "macless.dev" },
+  { pattern = "macless.dev/login*", zone_name = "macless.dev" },
+  { pattern = "macless.dev/oauth/callback*", zone_name = "macless.dev" },
+  { pattern = "macless.dev/app", zone_name = "macless.dev" },
+  { pattern = "macless.dev/app/*", zone_name = "macless.dev" },
+  { pattern = "macless.dev/api/*", zone_name = "macless.dev" }
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "macless-backend"
+database_id = "592684c3-db4b-4df0-9bee-40983c775788"  # macless-backend D1 database — created + schema applied live via the Cloudflare dashboard, 2026-08-25
+
+# Vars (not secret — fine to see in `wrangler.toml`):
+[vars]
+PUBLIC_BASE_URL = "https://macless.dev"
+
+# Secrets (STRIPE_RESTRICTED_KEY, STRIPE_PRICE_ID_IOS, STRIPE_PRICE_ID_ANDROID,
+# GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY, SESSION_SECRET)
+# are NOT set here — see DEPLOY.md. They go in via `wrangler secret put NAME`
+# or the Cloudflare dashboard, so they never sit in a file that could get
+# committed anywhere. (STRIPE_PRICE_ID_* and GITHUB_CLIENT_ID aren't
+# actually sensitive, but keeping all seven in one place — secrets — is
+# simpler than splitting them and there's no cost to it.)
