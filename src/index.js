@@ -24,6 +24,7 @@ import { encryptToken, decryptToken, signSession, verifySession as verifyCookie 
 import { scanRepoWorkflows } from "./lib/workflow-scan.js";
 import { diagnoseRejection, generateAppealLetter } from "./lib/rejection-doctor.js";
 import { diagnoseIosProfile, diagnoseAndroidKeystore, formatReport } from "./lib/signing-doctor.js";
+import { autoProvisionSigning, AscApiError } from "./lib/asc-auto-provision.js";
 import { TEMPLATE_FILES } from "./lib/template-files.generated.js";
 import { WIZARD_HTML, WIZARD_JS, WIZARD_CSS } from "./lib/public-embed.generated.js";
 
@@ -369,6 +370,34 @@ export default {
               ? await githubApi.pushVariable(buyer.token, body.owner, body.repo, body.name, body.value)
               : await githubApi.pushSecret(buyer.token, body.owner, body.repo, body.name, body.value);
           return json(result);
+        }
+
+        if (pathname === "/api/auto-sign" && request.method === "POST") {
+          // Auto-generates a Distribution certificate + App Store profile
+          // via the buyer's OWN Apple API key, packaged into a .p12 the
+          // wizard can push as secrets — replacing the manual "go create
+          // this yourself in Apple's portal" step. The buyer's .p8 key
+          // content lives only in this one request's memory: it's read
+          // from the JSON body below, handed straight to autoProvisionSigning,
+          // and falls out of scope when this handler returns. Nothing here
+          // writes it to D1, KV, a log, or anywhere else.
+          const body = await readJson(request);
+          if (!body.keyId || !body.issuerId || !body.p8Pem || !body.bundleIdentifier) {
+            return json({ ok: false, detail: "Key ID, Issuer ID, the .p8 file, and a bundle identifier are all required." }, 400);
+          }
+          if (typeof body.p8Pem !== "string" || body.p8Pem.length > 4000 || !body.p8Pem.includes("PRIVATE KEY")) {
+            return json({ ok: false, detail: "That doesn't look like a real .p8 API key file." }, 400);
+          }
+          try {
+            const result = await autoProvisionSigning(
+              { p8Pem: body.p8Pem, keyId: body.keyId, issuerId: body.issuerId },
+              { bundleIdentifier: body.bundleIdentifier, appName: body.appName }
+            );
+            return json({ ok: true, ...result });
+          } catch (e) {
+            const detail = e instanceof AscApiError ? e.message : `Couldn't generate signing files: ${(e && e.message) || e}`;
+            return json({ ok: false, detail }, e instanceof AscApiError ? 502 : 500);
+          }
         }
 
         if (pathname === "/api/trigger-build" && request.method === "POST") {
