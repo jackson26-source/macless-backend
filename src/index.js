@@ -114,6 +114,121 @@ async function verifyStripeSession(sessionId, env) {
   return { ok: true, product, email: session.customer_details?.email || session.customer_email || null };
 }
 
+// ------------------------------------------------------------- autopilot
+//
+// Macless Autopilot is a recurring-subscription add-on layered on top of
+// the one-time $99/$39 pipeline purchase. It follows the project's own
+// pricing rule (see claude/macless-competitor-feature-research doc): the
+// one-time SKU only ever bundles things that run on the buyer's own
+// GitHub Actions minutes / own credentials / pure client-side logic —
+// anything Macless itself has to host or run continuously gets its own
+// price. Autopilot is the "anything Macless hosts and runs continuously"
+// case: a Cloudflare Cron sweep (see scheduled() below) that checks in on
+// a buyer's project on a schedule, on Macless's own compute.
+//
+// Billing follows the exact same pull-based pattern verifyStripeSession()
+// already uses above: there's no webhook receiver, so subscription status
+// is always re-verified directly against Stripe's API, both right after
+// checkout (verifyAndSyncAutopilotCheckout) and on the recurring cron
+// sweep (scheduled()). The `subscriptions` table (migrations/0002_autopilot.sql)
+// is explicitly a CACHE of that, never trusted alone for anything
+// billing-critical.
+//
+// Phase 1 (this change): billing scaffolding + an activity log + a
+// heartbeat cron that just proves the sweep runs and records that it
+// checked in. It does NOT yet take any real automated action on a
+// buyer's app.
+//
+// Phase 2 (not yet built, needs a decision first): real automated
+// actions — cert/profile auto-renewal, rejection auto-diagnose-and-resubmit.
+// The open question: true unattended cert renewal means calling the ASC
+// API on a schedule with no buyer present, which means storing the
+// buyer's ASC API key (encrypted) somewhere durable — a real reversal of
+// /api/auto-sign's existing hard rule, above, that the buyer's .p8 key is
+// NEVER persisted anywhere (D1, KV, logs). Don't build that silently; ask
+// first. Until that's decided, Phase 2's cert-handling should probably
+// stay "detect + notify" — which already exists for free, zero Macless
+// cost, via template/.github/workflows/check-expiry.yml, running on the
+// buyer's own GitHub Actions.
+
+async function fetchStripeSubscription(subscriptionId, env) {
+  const resp = await fetch(`https://api.stripe.com/v1/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+    headers: { Authorization: `Bearer ${env.STRIPE_RESTRICTED_KEY}` },
+  });
+  if (!resp.ok) return { ok: false };
+  return { ok: true, subscription: await resp.json() };
+}
+
+/** Called from /app/autopilot right after a Stripe Checkout redirect (?session_id=...) to sync the new subscription into our local cache. Re-checks Stripe directly rather than trusting the redirect alone. */
+async function verifyAndSyncAutopilotCheckout(sessionId, env) {
+  const resp = await fetch(
+    `https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}?expand[]=subscription`,
+    { headers: { Authorization: `Bearer ${env.STRIPE_RESTRICTED_KEY}` } }
+  );
+  if (!resp.ok) return { ok: false };
+  const session = await resp.json();
+  if (session.mode !== "subscription" || !session.subscription) return { ok: false, reason: "not-a-subscription" };
+  const sub = session.subscription;
+  const projectId = Number(session.metadata?.project_id);
+  const buyerId = Number(session.metadata?.buyer_id);
+  if (!projectId || !buyerId) return { ok: false, reason: "missing-metadata" };
+  await db.upsertSubscription(env.DB, {
+    projectId,
+    buyerId,
+    stripeCustomerId: sub.customer,
+    stripeSubscriptionId: sub.id,
+    status: sub.status,
+    currentPeriodEnd: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+  });
+  await db.logBotEvent(env.DB, { projectId, eventType: "heartbeat", detail: "Autopilot subscription activated." });
+  return { ok: true, projectId };
+}
+
+function autopilotStatusCard(project, subscription) {
+  const active = subscription && (subscription.status === "active" || subscription.status === "trialing");
+  if (!active) {
+    return `<div class="card">
+      <h1 style="font-size:20px;">Macless Autopilot</h1>
+      <p>A bot that checks in on <code>${project.owner}/${project.repo}</code> twice a day — expiring certs, failed builds, anything that needs your attention — and logs everything it does here.</p>
+      <form method="POST" action="/api/autopilot/checkout" id="autopilot-checkout-form">
+        <input type="hidden" name="project_id" value="${project.id}">
+        <button class="btn" type="submit">Enable Autopilot</button>
+      </form>
+      <script>
+        document.getElementById('autopilot-checkout-form').addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const resp = await fetch('/api/autopilot/checkout', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId: ${project.id} }),
+          });
+          const data = await resp.json();
+          if (data.ok && data.url) { window.location.href = data.url; }
+          else { alert(data.detail || "Couldn't start checkout."); }
+        });
+      </script>
+    </div>`;
+  }
+  const periodEnd = subscription.current_period_end ? new Date(subscription.current_period_end).toLocaleDateString() : "unknown";
+  return `<div class="card">
+    <h1 style="font-size:20px;">Macless Autopilot — active</h1>
+    <p>Watching <code>${project.owner}/${project.repo}</code>. Status: <strong>${subscription.status}</strong>. Renews ${periodEnd}.</p>
+  </div>`;
+}
+
+function botEventsTable(events) {
+  if (!events || events.length === 0) {
+    return `<p style="margin-top:16px;">No activity yet — Autopilot's heartbeat runs twice a day, so check back soon.</p>`;
+  }
+  const rows = events
+    .map(
+      (e) =>
+        `<tr><td style="padding:6px 10px 6px 0;white-space:nowrap;color:var(--text-dim);">${e.created_at}</td><td style="padding:6px 0;">${e.event_type}</td><td style="padding:6px 0 6px 10px;color:var(--text-dim);">${e.detail || ""}</td></tr>`
+    )
+    .join("");
+  return `<table style="margin-top:16px;width:100%;border-collapse:collapse;font-size:14px;"><tbody>${rows}</tbody></table>`;
+}
+
 function redirectUri(env) {
   return `${env.PUBLIC_BASE_URL}/oauth/callback`;
 }
@@ -262,6 +377,32 @@ export default {
       }
       if (pathname === "/app/wizard.css" && request.method === "GET") {
         return new Response(WIZARD_CSS, { headers: { "Content-Type": "text/css; charset=utf-8" } });
+      }
+
+      if (pathname === "/app/autopilot" && request.method === "GET") {
+        const buyer = await requireBuyer(request, env);
+        if (!buyer) return errorPage("You're not signed in (or your session expired). Use the link from your purchase confirmation email to reconnect.", 401);
+        const sessionIdParam = url.searchParams.get("session_id");
+        if (sessionIdParam) {
+          // Best-effort sync right after a Stripe Checkout redirect — the status
+          // card below always re-reads from the DB either way, so this isn't
+          // load-bearing if it fails (the cron sweep will catch up regardless).
+          await verifyAndSyncAutopilotCheckout(sessionIdParam, env);
+        }
+        const projectId = Number(url.searchParams.get("project_id"));
+        if (!projectId) return errorPage("Missing project_id — open Autopilot from a project in your dashboard.");
+        const project = await db.getProjectById(env.DB, projectId);
+        if (!project || project.buyer_id !== buyer.buyerId) return errorPage("That project isn't linked to your account.", 403);
+        const subscription = await db.getSubscriptionForProject(env.DB, projectId);
+        const events = await db.getRecentBotEvents(env.DB, projectId);
+        return html(
+          `<h1>Autopilot</h1>
+           ${autopilotStatusCard(project, subscription)}
+           <h2 style="font-size:16px;margin-top:32px;">Activity log</h2>
+           ${botEventsTable(events)}
+           <p style="margin-top:32px;"><a href="/app">&larr; Back to Macless</a></p>`,
+          "Macless — Autopilot"
+        );
       }
 
       // ---- API (all require the session cookie except auth/status + diagnose-rejection) -------
@@ -452,6 +593,42 @@ export default {
           return json({ ok: true, output: report.text, failed: report.failed, warned: report.warned });
         }
 
+        if (pathname === "/api/autopilot/checkout" && request.method === "POST") {
+          // Optional secret — deploys safely even before Jackson creates the
+          // real recurring Price in Stripe. See wrangler.toml's comment.
+          if (!env.STRIPE_PRICE_ID_AUTOPILOT) {
+            return json({ ok: false, detail: "Autopilot isn't available yet — check back soon." }, 501);
+          }
+          const body = await readJson(request);
+          const projectId = Number(body.projectId);
+          if (!projectId) return json({ ok: false, detail: "projectId is required." }, 400);
+          const project = await db.getProjectById(env.DB, projectId);
+          if (!project || project.buyer_id !== buyer.buyerId) return json({ ok: false, detail: "That project isn't linked to your account." }, 403);
+          const existing = await db.getSubscriptionForProject(env.DB, projectId);
+          if (existing && (existing.status === "active" || existing.status === "trialing")) {
+            return json({ ok: false, detail: "Autopilot is already active for this project." }, 400);
+          }
+          const params = new URLSearchParams();
+          params.set("mode", "subscription");
+          params.set("line_items[0][price]", env.STRIPE_PRICE_ID_AUTOPILOT);
+          params.set("line_items[0][quantity]", "1");
+          params.set("success_url", `${env.PUBLIC_BASE_URL}/app/autopilot?project_id=${projectId}&session_id={CHECKOUT_SESSION_ID}`);
+          params.set("cancel_url", `${env.PUBLIC_BASE_URL}/app/autopilot?project_id=${projectId}`);
+          params.set("metadata[project_id]", String(projectId));
+          params.set("metadata[buyer_id]", String(buyer.buyerId));
+          const stripeResp = await fetch("https://api.stripe.com/v1/checkout/sessions", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${env.STRIPE_RESTRICTED_KEY}`, "Content-Type": "application/x-www-form-urlencoded" },
+            body: params.toString(),
+          });
+          if (!stripeResp.ok) {
+            const detail = await stripeResp.text();
+            return json({ ok: false, detail: `Couldn't start checkout: ${detail}` }, 502);
+          }
+          const checkoutSession = await stripeResp.json();
+          return json({ ok: true, url: checkoutSession.url });
+        }
+
         if (pathname === "/api/build-logs" && request.method === "GET") {
           const owner = url.searchParams.get("owner");
           const repo = url.searchParams.get("repo");
@@ -466,6 +643,38 @@ export default {
       return new Response("Not found", { status: 404 });
     } catch (e) {
       return json({ ok: false, detail: String((e && e.message) || e) }, 500);
+    }
+  },
+
+  // Twice-daily heartbeat sweep (see wrangler.toml's [triggers]). Re-checks
+  // every locally-active subscription directly against Stripe (same
+  // pull-based pattern as everything else in this file) and logs one
+  // bot_events row per project either way, so the activity log always
+  // shows Autopilot is alive even before Phase 2 gives it real actions to
+  // log. Each project's iteration is wrapped in its own try/catch so one
+  // bad subscription can't stop the sweep from checking the rest.
+  async scheduled(event, env, ctx) {
+    const subs = await db.listActiveSubscriptions(env.DB);
+    for (const sub of subs) {
+      try {
+        const result = await fetchStripeSubscription(sub.stripe_subscription_id, env);
+        if (!result.ok) {
+          await db.logBotEvent(env.DB, { projectId: sub.project_id, eventType: "error", detail: "Couldn't reach Stripe to verify this subscription's status." });
+          continue;
+        }
+        const fresh = result.subscription;
+        await db.upsertSubscription(env.DB, {
+          projectId: sub.project_id,
+          buyerId: sub.buyer_id,
+          stripeCustomerId: fresh.customer,
+          stripeSubscriptionId: fresh.id,
+          status: fresh.status,
+          currentPeriodEnd: fresh.current_period_end ? new Date(fresh.current_period_end * 1000).toISOString() : null,
+        });
+        await db.logBotEvent(env.DB, { projectId: sub.project_id, eventType: "heartbeat", detail: `Checked in — status: ${fresh.status}.` });
+      } catch (e) {
+        await db.logBotEvent(env.DB, { projectId: sub.project_id, eventType: "error", detail: `Heartbeat sweep failed: ${(e && e.message) || e}` });
+      }
     }
   },
 };
