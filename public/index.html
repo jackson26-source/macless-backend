@@ -53,6 +53,28 @@
   <section class="panel" data-step="configure">
     <h1 class="step-title">Signing setup</h1>
     <p class="step-sub">Fill in what each workflow needs. Signing Doctor also runs for real as the first step of your build on GitHub's own runners — this is just a faster way to catch a bad cert/profile pairing before you even push.</p>
+    <div class="card" id="autoSignCard" style="display:none;">
+      <h3>Skip the manual cert setup</h3>
+      <p>Have an App Store Connect API key (Team-scoped)? Macless can generate your distribution certificate and provisioning profile directly through Apple's own API, using your own Apple Developer account — no manual portal clicking, and the key itself is never stored.</p>
+      <div class="field">
+        <label>Key ID</label>
+        <input type="text" id="autoSignKeyId">
+      </div>
+      <div class="field">
+        <label>Issuer ID</label>
+        <input type="text" id="autoSignIssuerId">
+      </div>
+      <div class="field">
+        <label>Bundle identifier</label>
+        <input type="text" id="autoSignBundleId" placeholder="com.example.app">
+      </div>
+      <div class="field">
+        <label>.p8 API key file</label>
+        <input type="file" id="autoSignP8File" accept=".p8">
+      </div>
+      <button class="btn btn-secondary" id="autoSignBtn">Generate signing files</button>
+      <div id="autoSignStatus" style="margin-top:10px;"></div>
+    </div>
     <div id="secretFields"></div>
     <div class="card" id="signingDoctorCard" style="display:none;">
       <h3>Signing Doctor</h3>
