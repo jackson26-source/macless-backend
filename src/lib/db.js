@@ -72,6 +72,59 @@ async function upsertProject(db, { buyerId, owner, repo, defaultBranch, product 
   return db.prepare("SELECT * FROM projects WHERE buyer_id = ? AND owner = ? AND repo = ?").bind(buyerId, owner, repo).first();
 }
 
+async function getProjectById(db, id) {
+  return db.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
+}
+
+// ------------------------------------------------------------- autopilot
+
+async function getSubscriptionForProject(db, projectId) {
+  return db.prepare("SELECT * FROM subscriptions WHERE project_id = ?").bind(projectId).first();
+}
+
+async function getSubscriptionByStripeId(db, stripeSubscriptionId) {
+  return db.prepare("SELECT * FROM subscriptions WHERE stripe_subscription_id = ?").bind(stripeSubscriptionId).first();
+}
+
+/** Insert-or-refresh the local cache of one Stripe subscription's status. Never the source of truth — see 0002_autopilot.sql's header comment. */
+async function upsertSubscription(db, { projectId, buyerId, stripeCustomerId, stripeSubscriptionId, status, currentPeriodEnd }) {
+  await db
+    .prepare(
+      `INSERT INTO subscriptions (project_id, buyer_id, stripe_customer_id, stripe_subscription_id, status, current_period_end)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(project_id) DO UPDATE SET
+         stripe_customer_id = excluded.stripe_customer_id,
+         stripe_subscription_id = excluded.stripe_subscription_id,
+         status = excluded.status,
+         current_period_end = excluded.current_period_end,
+         updated_at = datetime('now')`
+    )
+    .bind(projectId, buyerId, stripeCustomerId, stripeSubscriptionId, status, currentPeriodEnd || null)
+    .run();
+  return getSubscriptionForProject(db, projectId);
+}
+
+/** Every project with a subscription status that should currently be treated as paid-and-active. Used by the cron sweep — see index.js's scheduled() handler. */
+async function listActiveSubscriptions(db) {
+  const r = await db.prepare("SELECT * FROM subscriptions WHERE status IN ('active', 'trialing')").all();
+  return r.results || [];
+}
+
+async function logBotEvent(db, { projectId, eventType, detail }) {
+  await db
+    .prepare("INSERT INTO bot_events (project_id, event_type, detail) VALUES (?, ?, ?)")
+    .bind(projectId, eventType, detail || null)
+    .run();
+}
+
+async function getRecentBotEvents(db, projectId, limit = 50) {
+  const r = await db
+    .prepare("SELECT * FROM bot_events WHERE project_id = ? ORDER BY created_at DESC LIMIT ?")
+    .bind(projectId, limit)
+    .all();
+  return r.results || [];
+}
+
 export {
   getPurchaseBySession,
   createPurchase,
@@ -82,4 +135,11 @@ export {
   upsertBuyer,
   getProjectsForBuyer,
   upsertProject,
+  getProjectById,
+  getSubscriptionForProject,
+  getSubscriptionByStripeId,
+  upsertSubscription,
+  listActiveSubscriptions,
+  logBotEvent,
+  getRecentBotEvents,
 };
