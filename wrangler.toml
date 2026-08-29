@@ -26,14 +26,25 @@ binding = "DB"
 database_name = "macless-backend"
 database_id = "592684c3-db4b-4df0-9bee-40983c775788"  # macless-backend D1 database — created + schema applied live via the Cloudflare dashboard, 2026-08-25
 
+# Macless Autopilot's heartbeat sweep (see the scheduled() handler in
+# src/index.js) — re-checks every active subscription against Stripe and
+# logs a bot_events row either way. Twice a day is plenty for a heartbeat;
+# tighten this once Phase 2's real timed actions (cert-expiry renewal)
+# land and need finer granularity than "twice a day" to be useful.
+[triggers]
+crons = ["0 */12 * * *"]
+
 # Vars (not secret — fine to see in `wrangler.toml`):
 [vars]
 PUBLIC_BASE_URL = "https://macless.dev"
 
 # Secrets (STRIPE_RESTRICTED_KEY, STRIPE_PRICE_ID_IOS, STRIPE_PRICE_ID_ANDROID,
-# GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, TOKEN_ENCRYPTION_KEY, SESSION_SECRET)
-# are NOT set here — see DEPLOY.md. They go in via `wrangler secret put NAME`
-# or the Cloudflare dashboard, so they never sit in a file that could get
-# committed anywhere. (STRIPE_PRICE_ID_* and GITHUB_CLIENT_ID aren't
-# actually sensitive, but keeping all seven in one place — secrets — is
-# simpler than splitting them and there's no cost to it.)
+# STRIPE_PRICE_ID_AUTOPILOT, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET,
+# TOKEN_ENCRYPTION_KEY, SESSION_SECRET) are NOT set here — see DEPLOY.md.
+# They go in via `wrangler secret put NAME` or the Cloudflare dashboard, so
+# they never sit in a file that could get committed anywhere.
+# (STRIPE_PRICE_ID_* and GITHUB_CLIENT_ID aren't actually sensitive, but
+# keeping all eight in one place — secrets — is simpler than splitting
+# them and there's no cost to it. STRIPE_PRICE_ID_AUTOPILOT is optional —
+# /api/autopilot/checkout 501s cleanly until it's set, so this deploys
+# safely before Jackson has created the recurring Price in Stripe.)
