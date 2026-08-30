@@ -114,6 +114,51 @@ async function verifyStripeSession(sessionId, env) {
   return { ok: true, product, email: session.customer_details?.email || session.customer_email || null };
 }
 
+// ---------------------------------------------------------- funnel analytics
+//
+// Server-side purchase tracking. The site's client-side GA4 tag (macless-site's
+// gtag snippet) already fires: page_view (landing), view_pricing (added
+// 2026-08-30, fires when #pricing scrolls into view), and stripe_checkout_click
+// (checkout started). None of those can see whether the Stripe redirect that
+// follows ever actually completed with a real payment -- Stripe's checkout
+// page is Stripe's own domain, not ours to instrument. This is the one place
+// a real, server-verified payment is confirmed (see verifyStripeSession above),
+// so it's the only reliable place to fire "purchased". Sent via GA4's
+// Measurement Protocol (server-to-server), not the browser tag. Best-effort:
+// never blocks or fails the buyer's actual redirect if GA4 is slow/down.
+const GA4_PRODUCT_PRICE_USD = { ios: 99, android: 39 };
+
+async function sendGA4Purchase({ sessionId, productKey, env }) {
+  if (!env.GA4_API_SECRET || !env.GA4_MEASUREMENT_ID) return; // not configured yet -- no-op, not an error
+  const value = GA4_PRODUCT_PRICE_USD[productKey] ?? 0;
+  const body = {
+    // No real client_id exists server-side (this fires well after any
+    // client GA4 session, and 97% of sessions carry no attribution anyway
+    // per the project's own GA4 audit) -- a fresh id per event is fine
+    // for a count-and-value conversion event like this.
+    client_id: crypto.randomUUID(),
+    events: [
+      {
+        name: "purchase",
+        params: {
+          transaction_id: sessionId, // Stripe's own checkout session id -- stable, unique, never reused
+          currency: "USD",
+          value,
+          items: [{ item_id: productKey, item_name: `Macless - ${productKey}`, price: value, quantity: 1 }],
+        },
+      },
+    ],
+  };
+  try {
+    await fetch(
+      `https://www.google-analytics.com/mp/collect?measurement_id=${encodeURIComponent(env.GA4_MEASUREMENT_ID)}&api_secret=${encodeURIComponent(env.GA4_API_SECRET)}`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+  } catch (e) {
+    // Analytics must never break a real purchase confirmation -- swallow and move on.
+  }
+}
+
 // ------------------------------------------------------------- autopilot
 //
 // Macless Autopilot is a recurring-subscription add-on layered on top of
@@ -304,6 +349,10 @@ export default {
         const result = await verifyStripeSession(sessionId, env);
         if (!result.ok) return errorPage("We couldn't confirm this purchase yet. If you just paid seconds ago, wait a moment and refresh — otherwise email support with your receipt.");
         const purchase = await db.createPurchase(env.DB, { sessionId, product: result.product.key, email: result.email });
+        if (purchase._isNewPurchase) {
+          // Fire-and-forget: never let analytics delay or break the buyer's actual flow.
+          sendGA4Purchase({ sessionId, productKey: result.product.key, env }).catch(() => {});
+        }
 
         const cookies = parseCookies(request);
         const cookieBuyerId = cookies[SESSION_COOKIE] ? await verifyCookie(cookies[SESSION_COOKIE], env.SESSION_SECRET) : null;
