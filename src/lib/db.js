@@ -12,11 +12,16 @@ async function createPurchase(db, { sessionId, product, email }) {
   // INSERT ... ON CONFLICT DO NOTHING — /get-started can be hit more than
   // once for the same session (buyer refreshes, or double-clicks back),
   // and stripe_session_id is UNIQUE, so this is the idempotent path.
-  await db
+  const result = await db
     .prepare("INSERT INTO purchases (stripe_session_id, product, email) VALUES (?, ?, ?) ON CONFLICT(stripe_session_id) DO NOTHING")
     .bind(sessionId, product, email || null)
     .run();
-  return getPurchaseBySession(db, sessionId);
+  // meta.changes is 1 only on a real first-time insert (0 when the ON
+  // CONFLICT clause skipped it) — used by index.js to fire the GA4
+  // "purchase" event exactly once per real sale, never on a refresh.
+  const isNewPurchase = !!(result && result.meta && result.meta.changes === 1);
+  const purchase = await getPurchaseBySession(db, sessionId);
+  return { ...purchase, _isNewPurchase: isNewPurchase };
 }
 
 async function linkPurchaseToBuyer(db, sessionId, buyerId) {
