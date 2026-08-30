@@ -37,10 +37,15 @@ crons = ["0 */12 * * *"]
 # Vars (not secret — fine to see in `wrangler.toml`):
 [vars]
 PUBLIC_BASE_URL = "https://macless.dev"
+GA4_MEASUREMENT_ID = "G-L4YTJNNDS1" # same property/stream macless-site's gtag snippet reports to -- not sensitive, just an id
 
 # Secrets (STRIPE_RESTRICTED_KEY, STRIPE_PRICE_ID_IOS, STRIPE_PRICE_ID_ANDROID,
 # STRIPE_PRICE_ID_AUTOPILOT, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET,
-# TOKEN_ENCRYPTION_KEY, SESSION_SECRET) are NOT set here — see DEPLOY.md.
+# TOKEN_ENCRYPTION_KEY, SESSION_SECRET, GA4_API_SECRET) are NOT set here — see DEPLOY.md.
+# GA4_API_SECRET: a GA4 Measurement Protocol API secret (Admin > Data Streams >
+# macless.dev > Measurement Protocol API secrets), used only to send the
+# server-verified "purchase" event in src/index.js's sendGA4Purchase(). The
+# /get-started route no-ops that call safely if this isn't set yet.
 # They go in via `wrangler secret put NAME` or the Cloudflare dashboard, so
 # they never sit in a file that could get committed anywhere.
 # (STRIPE_PRICE_ID_* and GITHUB_CLIENT_ID aren't actually sensitive, but
