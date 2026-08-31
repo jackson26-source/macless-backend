@@ -118,7 +118,7 @@ function productMap(env) {
 }
 
 async function verifyStripeSession(sessionId, env) {
-  const resp = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}?expand[]=line_items`, {
+  const resp = await fetch(`https://api.stripe.com/v1/checkout/sessions/${encodeURIComponent(sessionId)}?expand[]=line_items&expand[]=subscription`, {
     headers: { Authorization: `Bearer ${env.STRIPE_RESTRICTED_KEY}` },
   });
   if (!resp.ok) return { ok: false };
@@ -128,7 +128,20 @@ async function verifyStripeSession(sessionId, env) {
   if (!priceId) return { ok: false, reason: "unknown-product" };
   const product = productMap(env)[priceId];
   if (!product) return { ok: false, reason: "unknown-product" };
-  return { ok: true, product, email: session.customer_details?.email || session.customer_email || null };
+  // For a subscription-mode session Stripe sets payment_status to "paid" once the first
+  // invoice clears, so the check above passes for the monthly plan too. What's different is
+  // that a subscription can LAPSE later, which a one-time purchase can't — so we carry the
+  // subscription id out of here and hand it to entitlementFor() to re-check from then on.
+  const subscription = session.subscription && typeof session.subscription === "object" ? session.subscription : null;
+  return {
+    ok: true,
+    product,
+    email: session.customer_details?.email || session.customer_email || null,
+    stripeSubscriptionId: subscription?.id || (typeof session.subscription === "string" ? session.subscription : null),
+    stripeCustomerId: subscription?.customer || session.customer || null,
+    subscriptionStatus: subscription?.status || null,
+    currentPeriodEnd: subscription ? subscriptionPeriodEnd(subscription) : null,
+  };
 }
 
 // ---------------------------------------------------------- funnel analytics
@@ -219,6 +232,75 @@ async function fetchStripeSubscription(subscriptionId, env) {
   });
   if (!resp.ok) return { ok: false };
   return { ok: true, subscription: await resp.json() };
+}
+
+// ------------------------------------------------------- plan entitlement
+//
+// What the money actually buys. Worth being precise, because it's narrower
+// than "access": the pipeline lives in the buyer's own repo and runs on their
+// own GitHub Actions minutes, so nothing here can stop their builds and
+// nothing here should try. What the $19.99/month buys is the HOSTED side —
+// the setup wizard, cert/profile expiry monitoring, the Doctors' extras, and
+// the work of keeping the pipeline current. That's the only thing gated.
+//
+// Two product shapes, two lifetimes:
+//   one-time ($299, and the archived $99/$39) — permanent, nothing to re-check.
+//   monthly  ($19.99)                          — can lapse, so it's re-checked
+//                                                against Stripe on every call.
+//
+// 'past_due' counts as active on purpose: Stripe marks a failed renewal
+// past_due and retries for about two weeks. A bank reissuing a card is not a
+// decision to leave, and locking someone out mid-retry is how you lose a
+// customer who wanted to stay. Stripe moves it to 'unpaid' or 'canceled' when
+// it genuinely gives up, and those don't count.
+//
+// A subscription cancelled mid-period stays 'active' in Stripe until the
+// period the buyer already paid for runs out, so following Stripe's own status
+// gives "keeps access until the end of the month they paid for" for free, with
+// no date arithmetic here to get wrong.
+const PLAN_ACTIVE_STATUSES = ["active", "trialing", "past_due"];
+
+/** Stripe API version 2025-03-31 ("Basil") REMOVED current_period_start/end from the
+ *  Subscription object and moved them onto each SubscriptionItem. We don't pin a
+ *  Stripe-Version header, so which shape comes back depends on the account's default --
+ *  and this account was created well after Basil shipped, so the item is the real source
+ *  and the top-level field is the legacy fallback. Reading only the old field silently
+ *  wrote NULL forever, which nothing would have noticed until a "renews on" date was
+ *  needed and wasn't there. */
+function subscriptionPeriodEnd(sub) {
+  const epoch = sub?.items?.data?.[0]?.current_period_end ?? sub?.current_period_end;
+  return epoch ? new Date(epoch * 1000).toISOString() : null;
+}
+const ONE_TIME_PRODUCTS = ["onetime", "ios", "android"];
+
+async function entitlementFor(env, buyerId) {
+  const purchases = await db.getPurchasesForBuyer(env.DB, buyerId);
+  const oneTime = (purchases || []).find((p) => ONE_TIME_PRODUCTS.includes(p.product));
+  if (oneTime) return { active: true, tier: oneTime.product, reason: "one-time purchase" };
+
+  const plan = await db.getPlanSubscriptionForBuyer(env.DB, buyerId);
+  if (!plan) return { active: false, tier: "free", reason: "no plan" };
+
+  const result = await fetchStripeSubscription(plan.stripe_subscription_id, env);
+  if (!result.ok) {
+    // Stripe unreachable. Fall back to the cached status rather than locking out a
+    // paying customer because of an outage on our side or theirs. The cache is only
+    // ever written from a real Stripe answer, so the worst case is a short grace
+    // period for someone who lapsed in the last few hours — the cron sweep and the
+    // next successful call both correct it.
+    return { active: PLAN_ACTIVE_STATUSES.includes(plan.status), tier: "monthly", reason: `stripe unreachable, cached ${plan.status}` };
+  }
+
+  const fresh = result.subscription;
+  const currentPeriodEnd = subscriptionPeriodEnd(fresh);
+  await db.upsertPlanSubscription(env.DB, {
+    buyerId,
+    stripeCustomerId: fresh.customer,
+    stripeSubscriptionId: fresh.id,
+    status: fresh.status,
+    currentPeriodEnd,
+  });
+  return { active: PLAN_ACTIVE_STATUSES.includes(fresh.status), tier: "monthly", reason: fresh.status, currentPeriodEnd };
 }
 
 /** Called from /app/autopilot right after a Stripe Checkout redirect (?session_id=...) to sync the new subscription into our local cache. Re-checks Stripe directly rather than trusting the redirect alone. */
@@ -366,6 +448,16 @@ export default {
         const result = await verifyStripeSession(sessionId, env);
         if (!result.ok) return errorPage("We couldn't confirm this purchase yet. If you just paid seconds ago, wait a moment and refresh — otherwise email support with your receipt.");
         const purchase = await db.createPurchase(env.DB, { sessionId, product: result.product.key, email: result.email });
+        // Park the subscription id now. There's no buyer row yet — that's created in
+        // /oauth/callback, which may never run if they pay and close the tab — so this
+        // is keyed on the checkout session and promoted onto the buyer there.
+        if (result.stripeSubscriptionId && result.stripeCustomerId) {
+          await db.recordCheckoutSubscription(env.DB, {
+            sessionId,
+            stripeSubscriptionId: result.stripeSubscriptionId,
+            stripeCustomerId: result.stripeCustomerId,
+          });
+        }
         if (purchase._isNewPurchase) {
           // Fire-and-forget: never let analytics delay or break the buyer's actual flow.
           sendGA4Purchase({ sessionId, productKey: result.product.key, env }).catch(() => {});
@@ -399,6 +491,19 @@ export default {
         if (!sessionId) return errorPage("Missing purchase session — start from the link in your purchase confirmation.");
         const result = await verifyStripeSession(sessionId, env); // re-verify, never trust the bare id alone
         if (!result.ok) return errorPage("We couldn't confirm this purchase. Email support with your receipt.");
+        // Park the subscription here as well as in /get-started. /oauth/callback reads this
+        // row to attach the plan to the buyer, and a buyer can legitimately reach /login
+        // without having passed through /get-started first -- straight from a Stripe receipt
+        // link, or a reconnect. If the row is missing at callback time nothing ever creates
+        // it, and a paying subscriber gets 402 on every gated call with no way back.
+        // Idempotent (ON CONFLICT DO NOTHING), so double-parking costs nothing.
+        if (result.stripeSubscriptionId && result.stripeCustomerId) {
+          await db.recordCheckoutSubscription(env.DB, {
+            sessionId,
+            stripeSubscriptionId: result.stripeSubscriptionId,
+            stripeCustomerId: result.stripeCustomerId,
+          });
+        }
         const state = await signSession(sessionId, env.SESSION_SECRET);
         const authorizeUrl = githubApi.authUrl(env.GITHUB_CLIENT_ID, redirectUri(env), state);
         return Response.redirect(authorizeUrl, 302);
@@ -423,6 +528,25 @@ export default {
         const encryptedToken = await encryptToken(exchanged.token, env.TOKEN_ENCRYPTION_KEY);
         const buyerId = await db.upsertBuyer(env.DB, { githubLogin: who.login, githubId: who.id, encryptedToken });
         await db.linkPurchaseToBuyer(env.DB, sessionId, buyerId);
+
+        // Promote a parked subscription (see /get-started) onto this buyer, so the plan
+        // is per-person rather than per-checkout. Re-reads status from Stripe rather than
+        // trusting what we stored minutes ago.
+        const parked = await db.getCheckoutSubscription(env.DB, sessionId);
+        if (parked) {
+          const subResult = await fetchStripeSubscription(parked.stripe_subscription_id, env);
+          const fresh = subResult.ok ? subResult.subscription : null;
+          await db.upsertPlanSubscription(env.DB, {
+            buyerId,
+            stripeCustomerId: parked.stripe_customer_id,
+            stripeSubscriptionId: parked.stripe_subscription_id,
+            // If Stripe is unreachable at this exact moment, record 'active' rather than
+            // stranding someone who just paid: they completed checkout seconds ago, and
+            // the cron sweep re-checks it within 12 hours either way.
+            status: fresh ? fresh.status : "active",
+            currentPeriodEnd: fresh ? subscriptionPeriodEnd(fresh) : null,
+          });
+        }
 
         const cookieValue = await signSession(buyerId, env.SESSION_SECRET);
         return new Response(null, {
@@ -511,6 +635,29 @@ export default {
       if (pathname.startsWith("/api/")) {
         const buyer = await requireBuyer(request, env);
         if (!buyer) return json({ ok: false, detail: "Not signed in." }, 401);
+
+        // ...and everything below except this allowlist needs a live entitlement.
+        // The allowlist is read-only visibility into work a buyer already has: their
+        // project list and the status/logs of builds already running in their own repo.
+        // Someone whose plan lapsed shouldn't be locked out of LOOKING at their own
+        // pipeline — it's still theirs, it's still building, and hiding it would be
+        // punitive rather than protective. Everything that does hosted work for them
+        // (the wizard, signing, pushing secrets, scanning, Autopilot) is gated.
+        const ENTITLEMENT_EXEMPT = ["/api/projects", "/api/build-status", "/api/build-logs"];
+        if (!ENTITLEMENT_EXEMPT.includes(pathname)) {
+          const entitlement = await entitlementFor(env, buyer.buyerId);
+          if (!entitlement.active) {
+            return json(
+              {
+                ok: false,
+                code: "plan_required",
+                detail:
+                  "This part of Macless needs an active plan. Your pipeline keeps building either way — it lives in your repo and runs on your own GitHub Actions minutes. Restart the plan at https://macless.dev/pricing.html",
+              },
+              402
+            );
+          }
+        }
 
         if (pathname === "/api/repos" && request.method === "GET") {
           return json(await githubApi.listRepos(buyer.token));
@@ -720,6 +867,39 @@ export default {
   // log. Each project's iteration is wrapped in its own try/catch so one
   // bad subscription can't stop the sweep from checking the rest.
   async scheduled(event, env, ctx) {
+    // Plan subscriptions first. This is what catches a lapse without waiting for the
+    // buyer to turn up — entitlementFor() re-checks Stripe on demand, but a customer
+    // who cancels and simply stops visiting would otherwise sit in the cache as
+    // 'active' indefinitely. No bot_events row for these: that log is per-project and
+    // buyer-facing, and a plan is neither.
+    //
+    // The whole block is wrapped, not just each iteration: listSweepablePlanSubscriptions
+    // throws if migration 0003 hasn't been applied to this environment yet, and an
+    // unguarded throw here would abort scheduled() before the Autopilot heartbeat sweep
+    // below ever runs — silently stopping cert-expiry monitoring for every project
+    // because of a table that has nothing to do with it.
+    try {
+      for (const plan of await db.listSweepablePlanSubscriptions(env.DB)) {
+        try {
+          const result = await fetchStripeSubscription(plan.stripe_subscription_id, env);
+          if (!result.ok) continue; // transient; the next sweep or the next request re-checks
+          const fresh = result.subscription;
+          await db.upsertPlanSubscription(env.DB, {
+            buyerId: plan.buyer_id,
+            stripeCustomerId: fresh.customer,
+            stripeSubscriptionId: fresh.id,
+            status: fresh.status,
+            currentPeriodEnd: subscriptionPeriodEnd(fresh),
+          });
+        } catch (e) {
+          // One bad subscription must never stop the sweep reaching the rest.
+        }
+      }
+    } catch (e) {
+      // Plan sweep unavailable (most likely migration 0003 not applied here). Fall
+      // through to the Autopilot sweep, which is independent of it.
+    }
+
     const subs = await db.listActiveSubscriptions(env.DB);
     for (const sub of subs) {
       try {
