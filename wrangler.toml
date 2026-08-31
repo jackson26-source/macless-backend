@@ -39,7 +39,8 @@ crons = ["0 */12 * * *"]
 PUBLIC_BASE_URL = "https://macless.dev"
 GA4_MEASUREMENT_ID = "G-L4YTJNNDS1" # same property/stream macless-site's gtag snippet reports to -- not sensitive, just an id
 
-# Secrets (STRIPE_RESTRICTED_KEY, STRIPE_PRICE_ID_IOS, STRIPE_PRICE_ID_ANDROID,
+# Secrets (STRIPE_RESTRICTED_KEY, STRIPE_PRICE_ID_MONTHLY, STRIPE_PRICE_ID_ONETIME,
+# STRIPE_PRICE_ID_IOS, STRIPE_PRICE_ID_ANDROID,
 # STRIPE_PRICE_ID_AUTOPILOT, GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET,
 # TOKEN_ENCRYPTION_KEY, SESSION_SECRET, GA4_API_SECRET) are NOT set here — see DEPLOY.md.
 # GA4_API_SECRET: a GA4 Measurement Protocol API secret (Admin > Data Streams >
@@ -50,6 +51,11 @@ GA4_MEASUREMENT_ID = "G-L4YTJNNDS1" # same property/stream macless-site's gtag s
 # they never sit in a file that could get committed anywhere.
 # (STRIPE_PRICE_ID_* and GITHUB_CLIENT_ID aren't actually sensitive, but
 # keeping all eight in one place — secrets — is simpler than splitting
-# them and there's no cost to it. STRIPE_PRICE_ID_AUTOPILOT is optional —
+# them and there's no cost to it. STRIPE_PRICE_ID_MONTHLY and
+# STRIPE_PRICE_ID_ONETIME are the 2026-08-31 pricing migration: without them
+# productMap() in src/index.js can't recognize a new purchase at all and
+# /get-started rejects it as unknown-product AFTER the card has been charged.
+# STRIPE_PRICE_ID_IOS/ANDROID are the archived one-time products, kept only so
+# pre-migration buyers still resolve. STRIPE_PRICE_ID_AUTOPILOT is optional —
 # /api/autopilot/checkout 501s cleanly until it's set, so this deploys
 # safely before Jackson has created the recurring Price in Stripe.)
