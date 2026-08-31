@@ -130,6 +130,60 @@ async function getRecentBotEvents(db, projectId, limit = 50) {
   return r.results || [];
 }
 
+// ---------------------------------------------------------- plan entitlements
+//
+// The $19.99/month plan (2026-08-31). Kept apart from the Autopilot
+// `subscriptions` helpers above on purpose — different table, different grain
+// (per buyer, not per project). See migrations/0003_plan_entitlements.sql.
+
+/** Park a Stripe subscription id against its checkout session, before we know who the buyer is. */
+async function recordCheckoutSubscription(db, { sessionId, stripeSubscriptionId, stripeCustomerId }) {
+  await db
+    .prepare(
+      `INSERT INTO checkout_subscriptions (stripe_session_id, stripe_subscription_id, stripe_customer_id)
+       VALUES (?, ?, ?) ON CONFLICT(stripe_session_id) DO NOTHING`
+    )
+    .bind(sessionId, stripeSubscriptionId, stripeCustomerId)
+    .run();
+}
+
+async function getCheckoutSubscription(db, sessionId) {
+  return db.prepare("SELECT * FROM checkout_subscriptions WHERE stripe_session_id = ?").bind(sessionId).first();
+}
+
+async function getPlanSubscriptionForBuyer(db, buyerId) {
+  return db.prepare("SELECT * FROM plan_subscriptions WHERE buyer_id = ?").bind(buyerId).first();
+}
+
+/** Insert-or-refresh the local cache of one buyer's plan subscription. Never the source of truth. */
+async function upsertPlanSubscription(db, { buyerId, stripeCustomerId, stripeSubscriptionId, status, currentPeriodEnd }) {
+  await db
+    .prepare(
+      `INSERT INTO plan_subscriptions (buyer_id, stripe_customer_id, stripe_subscription_id, status, current_period_end)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(buyer_id) DO UPDATE SET
+         stripe_customer_id = excluded.stripe_customer_id,
+         stripe_subscription_id = excluded.stripe_subscription_id,
+         status = excluded.status,
+         current_period_end = excluded.current_period_end,
+         updated_at = datetime('now')`
+    )
+    .bind(buyerId, stripeCustomerId, stripeSubscriptionId, status, currentPeriodEnd || null)
+    .run();
+  return getPlanSubscriptionForBuyer(db, buyerId);
+}
+
+/** Everything the cron sweep should re-check: the same status set that grants access
+ *  (see PLAN_ACTIVE_STATUSES in index.js — keep the two in step). Rows already cached as
+ *  'canceled' or 'unpaid' are skipped because Stripe can only move them further away from
+ *  active, and a buyer who resubscribes comes back through checkout, which rewrites the
+ *  row anyway. 'past_due' IS swept, so a recovered card flips the cache back to active
+ *  without waiting for that buyer to turn up. */
+async function listSweepablePlanSubscriptions(db) {
+  const r = await db.prepare("SELECT * FROM plan_subscriptions WHERE status IN ('active', 'trialing', 'past_due')").all();
+  return r.results || [];
+}
+
 export {
   getPurchaseBySession,
   createPurchase,
@@ -147,4 +201,9 @@ export {
   listActiveSubscriptions,
   logBotEvent,
   getRecentBotEvents,
+  recordCheckoutSubscription,
+  getCheckoutSubscription,
+  getPlanSubscriptionForBuyer,
+  upsertPlanSubscription,
+  listSweepablePlanSubscriptions,
 };
