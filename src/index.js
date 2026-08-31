@@ -94,11 +94,27 @@ function json(obj, status = 200, extraHeaders = {}) {
 
 // ------------------------------------------------------------- helpers
 
+// 2026-08-31 pricing migration. Was two platform SKUs (iOS $99 / Android $39),
+// each its own Stripe Product. Now ONE product ("Macless", prod_VAgP3vMPtyGpxU)
+// with two prices — $19.99/month recurring and $299 one-time — and iOS +
+// Android are both included in either. The old two entries stay so that
+// anyone who bought before today still resolves; their Products are archived
+// in Stripe, so no NEW session can ever carry those price ids.
+//
+// Built defensively rather than as an object literal: with computed keys, an
+// unset env var becomes the literal key "undefined", and a session whose
+// line_items came back without a price would then match it and be treated as
+// a valid purchase. Skipping falsy ids makes that impossible.
 function productMap(env) {
-  return {
-    [env.STRIPE_PRICE_ID_IOS]: { key: "ios", label: "Macless — iOS" },
-    [env.STRIPE_PRICE_ID_ANDROID]: { key: "android", label: "Macless — Android" },
+  const map = {};
+  const add = (priceId, key, label, recurring) => {
+    if (priceId) map[priceId] = { key, label, recurring: !!recurring };
   };
+  add(env.STRIPE_PRICE_ID_IOS, "ios", "Macless — iOS");
+  add(env.STRIPE_PRICE_ID_ANDROID, "android", "Macless — Android");
+  add(env.STRIPE_PRICE_ID_MONTHLY, "monthly", "Macless — monthly", true);
+  add(env.STRIPE_PRICE_ID_ONETIME, "onetime", "Macless");
+  return map;
 }
 
 async function verifyStripeSession(sessionId, env) {
@@ -109,6 +125,7 @@ async function verifyStripeSession(sessionId, env) {
   const session = await resp.json();
   if (session.payment_status !== "paid") return { ok: false, reason: "unpaid" };
   const priceId = session.line_items?.data?.[0]?.price?.id;
+  if (!priceId) return { ok: false, reason: "unknown-product" };
   const product = productMap(env)[priceId];
   if (!product) return { ok: false, reason: "unknown-product" };
   return { ok: true, product, email: session.customer_details?.email || session.customer_email || null };
@@ -126,7 +143,7 @@ async function verifyStripeSession(sessionId, env) {
 // so it's the only reliable place to fire "purchased". Sent via GA4's
 // Measurement Protocol (server-to-server), not the browser tag. Best-effort:
 // never blocks or fails the buyer's actual redirect if GA4 is slow/down.
-const GA4_PRODUCT_PRICE_USD = { ios: 99, android: 39 };
+const GA4_PRODUCT_PRICE_USD = { ios: 99, android: 39, monthly: 19.99, onetime: 299 };
 
 async function sendGA4Purchase({ sessionId, productKey, env }) {
   if (!env.GA4_API_SECRET || !env.GA4_MEASUREMENT_ID) return; // not configured yet -- no-op, not an error
