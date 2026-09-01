@@ -134,6 +134,12 @@ jobs:
             exit 1
           fi
 
+          if [ "$KEY_PASSWORD" != "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::ANDROID_KEY_PASSWORD and ANDROID_KEYSTORE_PASSWORD must be identical."
+            echo "keytool creates PKCS12 keystores by default, and PKCS12 does not support a key password separate from the store password. keytool prints a warning and SILENTLY IGNORES the key password you typed, so the key's real password is the store password. Signing then fails here with 'key associated with <alias> not a private key'. Set both secrets to the same value and re-run. See ANDROID.md."
+            exit 1
+          fi
+
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
 
           AAB_PATH=$(find android/app/build/outputs/bundle/release -maxdepth 1 -name "*.aab" | head -n 1)
@@ -148,7 +154,17 @@ jobs:
             "$AAB_PATH" "$KEY_ALIAS"
 
           echo "----- verifying signature -----"
-          jarsigner -verify "$AAB_PATH"
+          # jarsigner -verify exits 0 even when the file is completely UNSIGNED, so
+          # calling it bare proves nothing. -strict is worse than useless here: it
+          # exits 0 on an unsigned jar and NON-ZERO on a correctly signed one, because
+          # a self-signed upload key trips its trust check. Grepping the output is the
+          # only reliable gate. Both behaviours verified directly, 2026-08-31.
+          if ! jarsigner -verify "$AAB_PATH" | grep -q "^jar verified"; then
+            echo "::error::The AAB came out unsigned — jarsigner found no signature. Not uploading."
+            jarsigner -verify "$AAB_PATH" || true
+            exit 1
+          fi
+          echo "jar verified."
 
           echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
 
