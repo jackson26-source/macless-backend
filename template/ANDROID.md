@@ -159,6 +159,24 @@ on its own. If either step
 doesn't line up with Play Console's current flow, email
 localinfine@gmail.com and it'll get fixed for everyone.
 
+## Producing the first .aab without uploading
+
+Google Play will not accept API-driven releases for an app that has never
+had a build uploaded through the Console by hand. That means the very
+first release of a new app is a manual step, and you need a signed `.aab`
+in your hands before you can take it.
+
+Run the workflow from the Actions tab with **Run workflow**, tick
+**skip_upload**, and let it finish. It builds and signs exactly as a
+normal run would, then stops before the Play upload. Download the
+`signed-aab` artifact from the run summary and upload that file in Play
+Console under **Testing → Internal testing → Create new release**.
+
+After that first manual release exists, run the workflow normally and the
+upload step takes over. The signed `.aab` is published as an artifact on
+every run either way, so it's also there when you need to inspect what
+was actually built.
+
 ## Still stuck
 
 Email localinfine@gmail.com — same as the iOS side. See also SUPPORT.md.
