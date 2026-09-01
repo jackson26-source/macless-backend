@@ -38,6 +38,18 @@ you'd rather do it by hand.
 keytool -genkey -v -keystore release.keystore -alias upload -keyalg RSA -keysize 2048 -validity 10000
 ```
 
+**When it asks for a key password, press RETURN to reuse the keystore
+password.** This matters more than it looks. `keytool` creates PKCS12
+keystores by default, and PKCS12 has no concept of a key password that
+differs from the store password — if you type a different one, keytool
+prints a warning and silently ignores it. The key's real password is
+then the store password, so a build configured with two different
+passwords fails at the signing step with `key associated with upload not
+a private key`, which reads like a corrupt keystore rather than a
+password mismatch. Set `ANDROID_KEYSTORE_PASSWORD` and
+`ANDROID_KEY_PASSWORD` to the same value. The workflow now checks this
+up front and fails with an explanation instead.
+
 Keep `release.keystore` somewhere safe — if you lose it, you lose the
 ability to publish updates to your app under the same Play Store listing.
 `keytool` ships with any JDK. If you don't have one installed locally,
@@ -131,10 +143,19 @@ template compiles against Java 21, so the workflow sets up JDK 21 (not
 "invalid source release: 21".
 
 The `npx cap add`/sync and Gradle build steps are now confirmed working
-end-to-end on the throwaway test repo. The `jarsigner` signing step and
-the final **Upload to Google Play** step still haven't been exercised
-against a real Play Console app/service account, since that needs
-credentials this template can't generate on its own. If either step
+end-to-end on the throwaway test repo.
+
+**Update 2026-08-31:** the `jarsigner` signing step has now been verified
+in isolation — keystore generation, the exact signing command this
+workflow runs, and signature verification, against both a correctly
+signed bundle and a deliberately unsigned one. That found two real bugs,
+both now fixed: the PKCS12 password trap described earlier, and a
+verification step that could never fail (`jarsigner -verify` exits 0 on a
+completely unsigned file, and `-strict` is worse — it exits 0 on an
+unsigned jar and non-zero on a correctly signed one). What remains
+unexercised is the final **Upload to Google Play** step, which needs a
+real Play Console app and service account this template can't generate
+on its own. If either step
 doesn't line up with Play Console's current flow, email
 localinfine@gmail.com and it'll get fixed for everyone.
 
