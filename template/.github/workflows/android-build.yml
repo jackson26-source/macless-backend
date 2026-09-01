@@ -11,6 +11,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      skip_upload:
+        description: "Build and sign only — don't upload to Google Play. Use this to produce the .aab for the very first manual upload, which Play requires before its API will accept releases for a new app."
+        type: boolean
+        default: false
 
 # Least-privilege default: this workflow only builds/signs/uploads — it never
 # needs to write back to the repo, so GITHUB_TOKEN doesn't need write access.
@@ -168,7 +173,19 @@ jobs:
 
           echo "AAB_PATH=$AAB_PATH" >> "$GITHUB_ENV"
 
+      # Always published as an artifact, upload or not — this is the file you
+      # hand-upload to Play Console for a new app's first release, and it's
+      # also what you inspect when an upload is rejected.
+      - name: Publish the signed AAB as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-aab
+          path: ${{ env.AAB_PATH }}
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload to Google Play
+        if: ${{ inputs.skip_upload != true }}
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.ANDROID_PLAY_SERVICE_ACCOUNT_JSON }}
@@ -176,3 +193,8 @@ jobs:
           releaseFiles: ${{ env.AAB_PATH }}
           track: ${{ vars.ANDROID_PLAY_TRACK || 'internal' }}
           status: completed
+
+      - name: Note when upload was skipped
+        if: ${{ inputs.skip_upload == true }}
+        run: |
+          echo "::notice::Upload skipped. Download the 'signed-aab' artifact from this run and upload it by hand in Play Console under Testing > Internal testing > Create new release. Google Play will not accept API releases for an app that has never had a build uploaded through the Console."
