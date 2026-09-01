@@ -29,7 +29,7 @@ import { TEMPLATE_FILES } from "./lib/template-files.generated.js";
 import { WIZARD_HTML, WIZARD_JS, WIZARD_CSS } from "./lib/public-embed.generated.js";
 
 const SESSION_COOKIE = "mx_session";
-const SUPPORT_EMAIL = "support@macless.dev"; // update if this isn't the real inbox
+const SUPPORT_EMAIL = "jackson@macless.dev"; // the only real inbox — support@ was never created
 const OAUTH_STATE_MAX_AGE_SECONDS = 60 * 10; // the GitHub OAuth round-trip should take seconds, not days
 
 // Real provisioning profiles / certs / keystores are a few KB to tens of KB.
