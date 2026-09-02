@@ -82,14 +82,31 @@ hand, then this workflow takes over for every one after.
 
 ## 3. Create a Play Console service account
 
-1. Play Console → **Setup → API access** → link (or create) a Google
-   Cloud project if you don't already have one → **Create new service
-   account**
-2. Follow the link into Google Cloud Console, create the service
-   account, generate a JSON key, download it
-3. Back in Play Console, grant that service account **Release manager**
-   permission (or a custom role with release + app-info access) for your
-   specific app
+Google removed the old **Setup → API access** page, and you no longer
+link a Cloud project to your developer account at all. If a guide sends
+you hunting for "API access" in Play Console, it predates that change —
+the page is gone, not hidden behind a permission. Checked 2026-09-02.
+
+The flow now starts in Google Cloud and finishes in Play Console:
+
+1. [Google Cloud Console → Service accounts](https://console.cloud.google.com/iam-admin/serviceaccounts).
+   Create a project if you don't have one — any name will do — and
+   enable the **Google Play Android Developer API** for it.
+2. **Create service account.** Name it something you'll recognise in a
+   year (`play-upload` is fine) and click through to Done.
+3. Open the service account → **Keys** → **Add key → Create new key →
+   JSON**. It downloads immediately, and Google will never show it to
+   you again. This one file can publish to your store listing, so treat
+   it like a password: it goes straight into a GitHub secret and
+   nowhere else.
+4. Play Console → **Users and permissions** → **Invite new users** →
+   paste the service account's email address. It ends in
+   `.iam.gserviceaccount.com` and is shown on the service account's
+   page in Cloud Console.
+5. Under app permissions, add your app and grant **Release to testing
+   tracks** — or **Release manager** if you expect to promote to
+   production from CI later. Send the invite. There is nothing to
+   accept on the other end; a service account isn't a person.
 
 ## 4. Add secrets and variables to your GitHub repo
 
@@ -102,8 +119,16 @@ Repository secrets:
 | `ANDROID_KEYSTORE_BASE64` | base64 of `release.keystore` |
 | `ANDROID_KEYSTORE_PASSWORD` | the password you set with `keytool` |
 | `ANDROID_KEY_ALIAS` | the `-alias` value you used (e.g. `upload`) |
-| `ANDROID_KEY_PASSWORD` | usually the same as the keystore password unless you set a separate one |
+| `ANDROID_KEY_PASSWORD` | **must be identical to `ANDROID_KEYSTORE_PASSWORD`** — see the note under this table |
 | `ANDROID_PLAY_SERVICE_ACCOUNT_JSON` | the full contents of the service account JSON file from step 3 |
+
+**The two password secrets must match.** `keytool` creates PKCS12
+keystores by default, and PKCS12 has no key password separate from the
+store password — if you typed a different one, `keytool` printed a
+warning and ignored it, and the key's real password is the store
+password. The build compares these two secrets and stops in seconds if
+they differ, rather than failing twenty minutes later with the
+unhelpful `key associated with <alias> not a private key`.
 
 Repository variables:
 
@@ -111,6 +136,8 @@ Repository variables:
 |---|---|
 | `ANDROID_PACKAGE_NAME` | your package name, e.g. `com.yourname.yourapp` |
 | `ANDROID_PLAY_TRACK` | `internal`, `alpha`, `beta`, or `production` — defaults to `internal` if you leave this unset, which is where you should start anyway |
+| `ANDROID_TARGET_SDK` | Optional. The Android API level to build against. Defaults to 36, which is what Google Play currently requires. Google raises this floor roughly every August — set this to move ahead of the default without waiting on a template update. |
+| `ANDROID_VERSION_CODE_OFFSET` | Optional, and only if you are migrating an app that already has releases on Play. Each build's versionCode is this workflow's run number plus this offset. Play permanently rejects any versionCode it has seen before, so set this above your highest existing one. |
 
 ## How this differs structurally from the iOS pipeline
 
