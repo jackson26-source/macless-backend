@@ -112,8 +112,109 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null || true
+      # ---- Google Play REJECTS an upload whose targetSdk is below the level
+      # it currently mandates: "Your app currently targets API level 35 and
+      # must target at least API level 36". Capacitor's generated
+      # variables.gradle pins whatever API level was current when that
+      # Capacitor version shipped, so a project generated today can already
+      # be a full level behind on the day it first uploads. Verified against
+      # a real Play Console upload, 2026-09-02.
+      #
+      # This patches the GENERATED project, not the customer's repo, because
+      # `npx cap add android` recreates android/ from scratch on every run —
+      # anything edited into it by hand is silently discarded next build.
+      #
+      # Google raises this floor roughly every August. Set an
+      # ANDROID_TARGET_SDK repo variable to move ahead of the default here
+      # without waiting on a template update.
+      - name: Target the API level Google Play requires
+        env:
+          TARGET_SDK: ${{ vars.ANDROID_TARGET_SDK || '36' }}
+        run: |
+          cd android
+
+          sed -i -E "s/(compileSdkVersion|targetSdkVersion)([[:space:]]*=[[:space:]]*)[0-9]+/\\1\\2${TARGET_SDK}/" variables.gradle
+
+          echo "----- variables.gradle after patch -----"
+          grep -E "(compile|target)SdkVersion" variables.gradle
+
+          # sed exits 0 whether or not it matched anything, so a Capacitor
+          # release that renames these keys would sail straight through to a
+          # Play rejection 20 minutes later. Assert instead.
+          for KEY in compileSdkVersion targetSdkVersion; do
+            if ! grep -qE "${KEY}[[:space:]]*=[[:space:]]*${TARGET_SDK}([^0-9]|$)" variables.gradle; then
+              echo "::error::Could not set ${KEY} to ${TARGET_SDK} in android/variables.gradle. Capacitor may have changed the layout of that file."
+              exit 1
+            fi
+          done
+
+          # AGP warns loudly when compileSdk is newer than the level it was
+          # built against, and Capacitor's pinned AGP is always slightly
+          # behind the level Play demands. Acknowledge it explicitly rather
+          # than leaving a scary warning in every customer's build log.
+          echo "android.suppressUnsupportedCompileSdk=${TARGET_SDK}" >> gradle.properties
+
+      # ---- Play rejects any upload whose versionCode it has seen before:
+      # "Version code 1 has already been used." Capacitor hardcodes
+      # versionCode 1 into the generated app/build.gradle, so without this
+      # the pipeline can upload exactly once and every run after it fails at
+      # the very last step, after a full build. Tying it to the run number
+      # makes it unique and monotonically increasing for free.
+      #
+      # Migrating an app that already has releases on Play? Set
+      # ANDROID_VERSION_CODE_OFFSET to a number above your highest existing
+      # versionCode, since this repo's run numbers start from 1.
+      - name: Give the build a unique versionCode
+        env:
+          OFFSET: ${{ vars.ANDROID_VERSION_CODE_OFFSET || '0' }}
+        run: |
+          cd android
+          VERSION_CODE=$(( ${{ github.run_number }} + OFFSET ))
+          sed -i -E "s/versionCode[[:space:]]+[0-9]+/versionCode ${VERSION_CODE}/" app/build.gradle
+
+          if ! grep -qE "versionCode[[:space:]]+${VERSION_CODE}([^0-9]|$)" app/build.gradle; then
+            echo "::error::Could not set versionCode in android/app/build.gradle."
+            exit 1
+          fi
+          echo "::notice::Building versionCode ${VERSION_CODE}."
+
+      # ---- sdkmanager is NOT on PATH on GitHub's Ubuntu runners — it lives
+      # under $ANDROID_SDK_ROOT/cmdline-tools/<version>/bin. The line that
+      # used to be here, `yes | sdkmanager --licenses > /dev/null || true`,
+      # was therefore a silent no-op on every run that has ever executed:
+      # bare `sdkmanager` exits 127 (command not found) and the `|| true`
+      # swallowed it, so the step reported success while doing nothing.
+      # Verified directly, 2026-09-02.
+      #
+      # The runner image also ships only a few SDK platforms, and not
+      # necessarily the one Play requires the week Google raises the floor,
+      # so the platform is installed explicitly. Both are no-ops when
+      # already satisfied.
+      - name: Accept licenses and install the SDK platform Play requires
+        env:
+          TARGET_SDK: ${{ vars.ANDROID_TARGET_SDK || '36' }}
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ] && [ -d "$SDK_ROOT/cmdline-tools" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort | tail -n 1)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::warning::sdkmanager not found under ${SDK_ROOT:-<no ANDROID_SDK_ROOT>}. Skipping the explicit install — the Android Gradle plugin will try to fetch API ${TARGET_SDK} itself. If the build fails with 'Failed to install the following SDK components', this is why."
+            exit 0
+          fi
+
+          echo "Using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+
+          # build-tools for a brand-new API level sometimes lands weeks after
+          # the platform does, so a combined install can fail on a package
+          # that simply doesn't exist yet. Fall back to the platform alone,
+          # which is the part Gradle actually needs to compile against.
+          "$SDKMANAGER" "platforms;android-${TARGET_SDK}" "build-tools;${TARGET_SDK}.0.0" || "$SDKMANAGER" "platforms;android-${TARGET_SDK}"
+
 
       - name: Build unsigned release AAB
         run: |
