@@ -286,6 +286,7 @@ jobs:
           retention-days: 14
 
       - name: Upload to Google Play
+        id: play_upload
         if: ${{ inputs.skip_upload != true }}
         uses: r0adkll/upload-google-play@v1
         with:
@@ -294,6 +295,42 @@ jobs:
           releaseFiles: ${{ env.AAB_PATH }}
           track: ${{ vars.ANDROID_PLAY_TRACK || 'internal' }}
           status: completed
+
+      # ---- A failed upload is almost always one of three setup gaps, not a
+      # broken build, and the raw error Google returns names none of them:
+      # you get "Package not found", a bare 403, or occasionally an HTML
+      # login page. The signed .aab is already saved as an artifact by this
+      # point, so nothing is lost either way.
+      - name: Explain why the Play upload failed
+        if: ${{ always() && steps.play_upload.outcome == 'failure' }}
+        run: |
+          echo "::error::The build and the signing both worked — the .aab is attached to this run as the artifact named signed-aab. Only the upload to Google Play failed."
+          echo ""
+          echo "Three things cause this, in rough order of likelihood:"
+          echo ""
+          echo "1. THIS APP HAS NEVER HAD A MANUAL UPLOAD."
+          echo "   Google Play refuses API releases for an app until a human has"
+          echo "   uploaded one build through Play Console. This is a one-time"
+          echo "   thing and it is almost certainly what happened here."
+          echo "   Fix: download the signed-aab artifact from this run, then in"
+          echo "   Play Console go to Testing > Internal testing > Create new"
+          echo "   release and upload it by hand. Every release after that one"
+          echo "   can come from this workflow."
+          echo ""
+          echo "2. The service account cannot see this app."
+          echo "   In Play Console under Users and permissions, the service"
+          echo "   account email needs Release to testing tracks (or Release"
+          echo "   manager) granted on THIS app specifically, not just at the"
+          echo "   account level."
+          echo ""
+          echo "3. ANDROID_PACKAGE_NAME does not match the listing."
+          echo "   It has to equal the appId in capacitor.config.json and the"
+          echo "   package name of the Play listing, exactly. Play package names"
+          echo "   can never be changed or reused, so a typo here means creating"
+          echo "   a new listing."
+          echo ""
+          echo "ANDROID.md in this repo has the full setup."
+          exit 1
 
       - name: Note when upload was skipped
         if: ${{ inputs.skip_upload == true }}
