@@ -105,6 +105,7 @@ jobs:
             exit 1
           fi
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Info.plist")
+          echo "BUNDLE_ID=$BUNDLE_ID" >> "$GITHUB_ENV"
           echo "Installing $APP_PATH ($BUNDLE_ID)"
           xcrun simctl install "$DEVICE_ID" "$APP_PATH"
           xcrun simctl launch "$DEVICE_ID" "$BUNDLE_ID"
@@ -112,12 +113,44 @@ jobs:
           # first real screen before the screenshot is taken.
           sleep 6
 
+      - name: Check the app didn't crash after launch
+        # simctl launch only fails the job if the LAUNCH call itself errors —
+        # a crash a few seconds later (before the screenshot below) exits
+        # cleanly from this step's point of view and would otherwise produce
+        # a silent false-positive: a screenshot of the springboard/home
+        # screen with no failure signal at all. Two independent checks,
+        # either one failing the job:
+        #   1. the process is still actually running under the simulator
+        #   2. no fresh crash report was written for this bundle ID
+        run: |
+          if ! xcrun simctl spawn "$DEVICE_ID" launchctl list 2>/dev/null | grep -qi "$BUNDLE_ID"; then
+            echo "$BUNDLE_ID is not running in the simulator a few seconds after launch — it likely crashed on startup."
+            CRASH_LOG=$(find ~/Library/Logs/DiagnosticReports -maxdepth 1 -iname "*$(basename "$APP_PATH" .app)*" -newer "$APP_PATH/Info.plist" 2>/dev/null | head -n 1)
+            if [ -n "$CRASH_LOG" ]; then
+              echo "--- crash report: $CRASH_LOG ---"
+              cat "$CRASH_LOG"
+            fi
+            exit 1
+          fi
+          FRESH_CRASH=$(find ~/Library/Logs/DiagnosticReports -maxdepth 1 -iname "*$(basename "$APP_PATH" .app)*" -newer "$APP_PATH/Info.plist" 2>/dev/null | head -n 1)
+          if [ -n "$FRESH_CRASH" ]; then
+            echo "Found a crash report for this app written after launch, even though the process is still around (a background relaunch after a crash):"
+            cat "$FRESH_CRASH"
+            exit 1
+          fi
+          echo "$BUNDLE_ID is running and no crash report was found — looks like a clean launch."
+
       - name: Screenshot
+        # Runs even if the crash check above failed the job — a screenshot
+        # of whatever's on screen (springboard, a crash dialog, etc.) is
+        # useful debugging evidence for a crash, not just for a clean run.
+        if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/screenshots"
           xcrun simctl io "$DEVICE_ID" screenshot "$RUNNER_TEMP/screenshots/preview.png"
 
       - name: Upload screenshot as a build artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: simulator-preview
