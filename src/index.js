@@ -23,6 +23,7 @@ import * as githubApi from "./lib/github-api.js";
 import { encryptToken, decryptToken, signSession, verifySession as verifyCookie } from "./lib/crypto.js";
 import { scanRepoWorkflows } from "./lib/workflow-scan.js";
 import { scanProjectFiles } from "./lib/project-scan.js";
+import { extractFileFromZip } from "./lib/zip-extract.js";
 import { diagnoseRejection, generateAppealLetter } from "./lib/rejection-doctor.js";
 import { diagnoseIosProfile, diagnoseAndroidKeystore, formatReport } from "./lib/signing-doctor.js";
 import { autoProvisionSigning, AscApiError } from "./lib/asc-auto-provision.js";
@@ -425,6 +426,17 @@ function base64ToBytes(b64) {
   return bytes;
 }
 
+function bytesToBase64(bytes) {
+  // Chunked to avoid a call-stack overflow from String.fromCharCode.apply
+  // on a large argument list — screenshots can run a few hundred KB.
+  let binary = "";
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 async function readJson(request) {
   try {
     return await request.json();
@@ -644,7 +656,7 @@ export default {
         // pipeline — it's still theirs, it's still building, and hiding it would be
         // punitive rather than protective. Everything that does hosted work for them
         // (the wizard, signing, pushing secrets, scanning, Autopilot) is gated.
-        const ENTITLEMENT_EXEMPT = ["/api/projects", "/api/build-status", "/api/build-logs"];
+        const ENTITLEMENT_EXEMPT = ["/api/projects", "/api/build-status", "/api/build-logs", "/api/build-artifact"];
         if (!ENTITLEMENT_EXEMPT.includes(pathname)) {
           const entitlement = await entitlementFor(env, buyer.buyerId);
           if (!entitlement.active) {
@@ -866,6 +878,38 @@ export default {
           const runId = url.searchParams.get("runId");
           if (!owner || !repo || !runId) return json({ ok: false, log: "owner, repo and runId query params are required." }, 400);
           return json(await githubApi.failedLogs(buyer.token, owner, repo, runId));
+        }
+
+        if (pathname === "/api/build-artifact" && request.method === "GET") {
+          // Pulls the screenshot PNG out of a completed simulator-preview.yml
+          // run so the wizard can show it inline instead of sending the buyer
+          // to GitHub's own Actions UI to download a ZIP by hand. Read-only,
+          // same trust level as build-status/build-logs above.
+          const owner = url.searchParams.get("owner");
+          const repo = url.searchParams.get("repo");
+          const runId = url.searchParams.get("runId");
+          const artifactName = url.searchParams.get("artifactName") || "simulator-preview";
+          if (!owner || !repo || !runId) return json({ ok: false, detail: "owner, repo and runId query params are required." }, 400);
+
+          const artifactsResult = await githubApi.listArtifacts(buyer.token, owner, repo, runId);
+          if (!artifactsResult.ok) return json({ ok: false, detail: artifactsResult.detail || "Couldn't list artifacts for this run." }, 502);
+          const artifact = artifactsResult.artifacts.find((a) => a.name === artifactName);
+          if (!artifact) return json({ ok: false, detail: `No "${artifactName}" artifact on this run yet — it may still be running, may have failed before that step, or this workflow doesn't upload one.` }, 404);
+          if (artifact.expired) return json({ ok: false, detail: "This screenshot has expired (artifacts are only kept 14 days) — trigger a fresh Simulator run to get a new one." }, 410);
+
+          const zipResult = await githubApi.downloadArtifactZip(buyer.token, owner, repo, artifact.id);
+          if (!zipResult.ok) return json({ ok: false, detail: zipResult.detail || "Couldn't download the artifact from GitHub." }, 502);
+
+          let extracted;
+          try {
+            extracted = await extractFileFromZip(zipResult.bytes, (name) => /\.(png|jpe?g)$/i.test(name));
+          } catch (e) {
+            return json({ ok: false, detail: `Couldn't read the artifact ZIP: ${(e && e.message) || e}` }, 502);
+          }
+          if (!extracted) return json({ ok: false, detail: "The artifact downloaded fine but didn't contain an image file." }, 404);
+
+          const ext = extracted.fileName.toLowerCase().endsWith(".png") ? "png" : "jpeg";
+          return json({ ok: true, imageDataUrl: `data:image/${ext};base64,${bytesToBase64(extracted.bytes)}`, fileName: extracted.fileName });
         }
 
         return json({ ok: false, detail: "no such endpoint" }, 404);
