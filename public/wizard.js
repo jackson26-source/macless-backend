@@ -576,6 +576,25 @@
       return;
     }
 
+    // If this run produced a Simulator-preview screenshot artifact, show it
+    // right here — best-effort: most workflows don't produce one, and a
+    // missing artifact isn't an error worth surfacing, just nothing to show.
+    // Shown regardless of success/failure: a crash screenshot is useful too.
+    try {
+      var artifactResult = await api("/api/build-artifact?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&runId=" + run.databaseId);
+      if (artifactResult.ok && artifactResult.imageDataUrl) {
+        var shotWrap = document.createElement("div");
+        shotWrap.className = "card";
+        shotWrap.innerHTML = '<h3>Simulator screenshot</h3><p class="hint">From this run\'s Simulator preview, a few seconds after launch — a sanity check, not a substitute for testing on a real device.</p>';
+        var shotImg = document.createElement("img");
+        shotImg.src = artifactResult.imageDataUrl;
+        shotImg.alt = "Simulator screenshot";
+        shotImg.className = "sim-screenshot";
+        shotWrap.appendChild(shotImg);
+        statusEl.appendChild(shotWrap);
+      }
+    } catch (e) { /* no screenshot for this run — not an error, just nothing to show */ }
+
     // Close the loop: diagnose -> fix -> resubmit as one motion on this same
     // panel, instead of three separate stitched-together tools (check logs
     // elsewhere, fix elsewhere, come back and manually re-run from GitHub).
