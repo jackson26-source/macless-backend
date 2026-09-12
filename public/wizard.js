@@ -2,6 +2,7 @@
   var STEP_ORDER = ["connect", "scan", "configure", "push", "build", "rejection"];
   var state = {
     scan: null,
+    detected: null, // best-effort project detection from /api/scan-project — bundleId, packageName, deploymentTarget, platform, capabilities
     secretValues: {}, // name -> { kind, value (text) or base64 (file) }
     autoFilled: {}, // name -> true, for fields Macless generated via auto-sign
     workflowFile: null,
@@ -184,7 +185,33 @@
       return;
     }
 
+    // Best-effort read of the buyer's own project files, alongside the
+    // workflow scan above — never blocks Scan from finishing if this
+    // fails or comes back empty, it only pre-fills Configure's fields.
+    state.detected = null;
+    try {
+      var projResult = await api(
+        "/api/scan-project?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) +
+        "&defaultBranch=" + encodeURIComponent(state.defaultBranch)
+      );
+      if (projResult.ok) state.detected = projResult.detected;
+    } catch (e) { /* Configure step just falls back to manual entry */ }
+
     var html = "";
+
+    if (state.detected && (state.detected.bundleId || state.detected.packageName || state.detected.platform)) {
+      var d = state.detected;
+      html += '<div class="card"><h3>Detected from your project</h3><p class="hint">Found by reading your repo\'s own project files — review these, they\'re pre-filled below but not locked in.</p><ul class="plain">';
+      if (d.platform) html += "<li>Platform: <b>" + escapeHtml(d.platform) + "</b></li>";
+      if (d.bundleId) html += "<li>iOS bundle ID: <b class=\"mono\">" + escapeHtml(d.bundleId) + "</b></li>";
+      if (d.packageName) html += "<li>Android package name: <b class=\"mono\">" + escapeHtml(d.packageName) + "</b></li>";
+      if (d.deploymentTarget) html += "<li>iOS deployment target: <b>" + escapeHtml(d.deploymentTarget) + "</b></li>";
+      if (d.capabilities && d.capabilities.length) {
+        html += "<li>Capabilities found in your entitlements file: <b>" + d.capabilities.map(function (c) { return escapeHtml(c.label); }).join(", ") + "</b> — Apple will ask about these at submission time, good to know now.</li>";
+      }
+      html += "</ul></div>";
+    }
+
     result.workflows.forEach(function (w) {
       html +=
         '<div class="card"><h3>' + escapeHtml(w.name) + " <span class=\"mono hint\">(" + escapeHtml(w.file) + ')</span></h3>' +
@@ -228,13 +255,31 @@
       return wrap;
     }
 
+    // Pre-fill from /api/scan-project, if this field's exact name matches
+    // something the project scan actually found — deliberately exact-name
+    // matching only (not the generic BUNDLE_ID/PACKAGE_NAME fallback regex
+    // in workflow-scan.js's HINTS), so a detected iOS value can never land
+    // in an Android field or vice versa. Still just a default: it's a
+    // normal editable text input, and typing into it overwrites this the
+    // same way as any other field.
+    var detectedValue = null;
+    if (!isFile && !isManual && state.detected) {
+      if (/^IOS_BUNDLE_ID$/i.test(s.name) && state.detected.bundleId) detectedValue = state.detected.bundleId;
+      else if (/^ANDROID_PACKAGE_NAME$/i.test(s.name) && state.detected.packageName) detectedValue = state.detected.packageName;
+    }
+    if (detectedValue && !(state.secretValues[s.name] && state.secretValues[s.name].kind === "text")) {
+      state.secretValues[s.name] = { kind: "text", scope: s.scope, value: detectedValue };
+    }
+    var detectedHint = detectedValue ? '<p class="hint"><span class="status-badge ok">detected</span> from your project — edit if this is wrong</p>' : "";
+
     wrap.innerHTML =
-      labelHtml + usedByHint +
+      labelHtml + usedByHint + detectedHint +
       (isFile
         ? '<input type="file" data-secret="' + s.name + '" data-kind="file" data-scope="' + s.scope + '">'
         : isManual
         ? '<textarea data-secret="' + s.name + '" data-kind="text" data-scope="' + s.scope + '" placeholder="Paste the file contents here once you have it — see the label above for where to get it."></textarea>'
-        : '<input type="' + (isSecretText ? "password" : "text") + '" data-secret="' + s.name + '" data-kind="text" data-scope="' + s.scope + '">');
+        : '<input type="' + (isSecretText ? "password" : "text") + '" data-secret="' + s.name + '" data-kind="text" data-scope="' + s.scope + '"' +
+          (detectedValue ? ' value="' + escapeHtml(detectedValue) + '"' : "") + ">");
     return wrap;
   }
 
