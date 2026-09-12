@@ -22,6 +22,7 @@ import * as db from "./lib/db.js";
 import * as githubApi from "./lib/github-api.js";
 import { encryptToken, decryptToken, signSession, verifySession as verifyCookie } from "./lib/crypto.js";
 import { scanRepoWorkflows } from "./lib/workflow-scan.js";
+import { scanProjectFiles } from "./lib/project-scan.js";
 import { diagnoseRejection, generateAppealLetter } from "./lib/rejection-doctor.js";
 import { diagnoseIosProfile, diagnoseAndroidKeystore, formatReport } from "./lib/signing-doctor.js";
 import { autoProvisionSigning, AscApiError } from "./lib/asc-auto-provision.js";
@@ -714,6 +715,23 @@ export default {
           const repo = url.searchParams.get("repo");
           if (!owner || !repo) return json({ ok: false, detail: "owner and repo query params are required." }, 400);
           return json(await scanRepoWorkflows(buyer.token, owner, repo));
+        }
+
+        if (pathname === "/api/scan-project" && request.method === "GET") {
+          // Best-effort read of the buyer's OWN app files (Xcode project
+          // settings, capacitor.config, app.json, build.gradle,
+          // entitlements) so the Configure step can pre-fill bundle ID /
+          // package name / deployment target / detected capabilities
+          // instead of asking for values that already exist in their repo.
+          // Never blocks the flow: an empty/partial result just means the
+          // buyer types those fields in by hand, exactly like before this
+          // endpoint existed.
+          const owner = url.searchParams.get("owner");
+          const repo = url.searchParams.get("repo");
+          const defaultBranch = url.searchParams.get("defaultBranch") || "main";
+          if (!owner || !repo) return json({ ok: false, detail: "owner and repo query params are required." }, 400);
+          const detected = await scanProjectFiles(buyer.token, owner, repo, defaultBranch);
+          return json({ ok: true, detected });
         }
 
         if (pathname === "/api/push-secret" && request.method === "POST") {
