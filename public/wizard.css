@@ -55,6 +55,7 @@ p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-
 .card ul.plain{ list-style: none; margin: 10px 0 0; padding: 0; font-size: 14.5px; color: var(--text-dim); }
 .card ul.plain li{ padding: 4px 0; border-top: 1px solid var(--border); }
 .card ul.plain li:first-child{ border-top: none; }
+.sim-screenshot{ display:block; max-width: 240px; width:100%; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; }
 
 .field{ margin-bottom: 18px; }
 .field label{ display:block; font-size: 13px; font-weight:600; color: var(--text-dim); margin-bottom: 6px; }
