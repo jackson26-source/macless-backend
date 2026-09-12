@@ -241,4 +241,24 @@ async function failedLogs(token, owner, repo, runId) {
   return { ok: true, log: await logResp.text() };
 }
 
-export { authUrl, exchangeCode, whoAmI, listRepos, createRepo, commitFiles, listRepoPaths, pushSecret, pushVariable, triggerWorkflow, listRuns, runStatus, failedLogs };
+async function listArtifacts(token, owner, repo, runId) {
+  const r = await apiRequest(`/repos/${owner}/${repo}/actions/runs/${runId}/artifacts`, token);
+  if (!r.ok) return { ok: false, detail: (r.json && r.json.message) || `GitHub returned ${r.status}`, artifacts: [] };
+  const artifacts = (r.json.artifacts || []).map((a) => ({ id: a.id, name: a.name, sizeInBytes: a.size_in_bytes, expired: a.expired }));
+  return { ok: true, artifacts };
+}
+
+// GitHub's artifact-download endpoint 302s to a short-lived, pre-signed blob
+// storage URL that needs no Authorization header of its own — same shape as
+// failedLogs() above's job-logs endpoint, so this follows the same plain
+// fetch-with-default-redirect pattern rather than a manual redirect dance.
+async function downloadArtifactZip(token, owner, repo, artifactId) {
+  const resp = await fetch(`${API}/repos/${owner}/${repo}/actions/artifacts/${artifactId}/zip`, {
+    headers: { Authorization: `Bearer ${token}`, "User-Agent": "macless-backend" },
+  }).catch(() => null);
+  if (!resp || !resp.ok) return { ok: false, detail: "Couldn't download the artifact from GitHub." };
+  const buf = await resp.arrayBuffer();
+  return { ok: true, bytes: new Uint8Array(buf) };
+}
+
+export { authUrl, exchangeCode, whoAmI, listRepos, createRepo, commitFiles, listRepoPaths, pushSecret, pushVariable, triggerWorkflow, listRuns, runStatus, failedLogs, listArtifacts, downloadArtifactZip };
