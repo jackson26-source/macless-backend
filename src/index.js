@@ -910,6 +910,22 @@ export default {
           if (!extracted) return json({ ok: false, detail: "The artifact downloaded fine but didn't contain an image file." }, 404);
 
           const ext = extracted.fileName.toLowerCase().endsWith(".png") ? "png" : "jpeg";
+
+          // The wizard's own <img> tags load this screenshot via a same-origin
+          // image request (?raw=1) rather than embedding it as a data: URL
+          // client-side. macless.dev's site-wide Content-Security-Policy
+          // img-src (set at the Cloudflare zone level, outside this codebase)
+          // does not include the data: scheme, so a data: URL image silently
+          // never renders in any CSP-enforcing browser -- confirmed live
+          // 2026-09-13 (valid PNG bytes, naturalWidth/naturalHeight both 0).
+          // A same-origin image response is already covered by img-src's
+          // existing 'self' allowance, so this is the only change needed.
+          if (url.searchParams.get("raw")) {
+            return new Response(extracted.bytes, {
+              headers: { "Content-Type": `image/${ext}`, "Cache-Control": "private, max-age=300" },
+            });
+          }
+
           return json({ ok: true, imageDataUrl: `data:image/${ext};base64,${bytesToBase64(extracted.bytes)}`, fileName: extracted.fileName });
         }
 
