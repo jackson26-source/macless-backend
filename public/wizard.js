@@ -101,7 +101,12 @@
     el.innerHTML = '<p class="empty-state">Loading your repos…</p>';
     $("#connectBtn").style.display = "inline-block";
     var reposResult = await api("/api/repos");
-    state.repos = reposResult.ok ? reposResult.repos : [];
+    if (!reposResult.ok) {
+      el.innerHTML = '<p class="empty-state">' + escapeHtml(reposResult.detail || "Couldn't load your repos.") + "</p>";
+      $("#connectBtn").style.display = "none";
+      return;
+    }
+    state.repos = reposResult.repos;
     renderRepoPicker();
   }
 
