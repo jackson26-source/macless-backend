@@ -1,11 +1,21 @@
 (function () {
-  var STEP_ORDER = ["connect", "scan", "configure", "push", "build", "rejection"];
+  // Phase 3 restructuring: this used to be a linear one-time wizard
+  // (connect -> scan -> configure -> push -> build -> rejection) that was
+  // "finished" once you'd been through it. It's now a persistent left-nav
+  // shell — Project / Build & Sign / Simulator / Store Listing / Doctors /
+  // Settings are all standing pages you can jump to any time, since
+  // Simulator checks, expiry monitoring, and a store listing are all
+  // things a buyer comes back to repeatedly, not just once. Every API
+  // call below is unchanged from the old wizard; only the routing/layout
+  // around them changed.
   var state = {
     scan: null,
     detected: null, // best-effort project detection from /api/scan-project — bundleId, packageName, deploymentTarget, platform, capabilities
-    secretValues: {}, // name -> { kind, value (text) or base64 (file) }
+    secretValues: {}, // name -> { kind, value (text) or base64 (file), filename (file only) }
     autoFilled: {}, // name -> true, for fields Macless generated via auto-sign
     workflowFile: null,
+    simulatorWorkflowFile: null, // auto-detected simulator-preview-style workflow, for the Simulator section
+    privacySignals: null,
     login: null,
     repos: [],
     owner: null,
@@ -13,37 +23,40 @@
     defaultBranch: "main",
     connected: false,
     creatingNew: false,
+    currentSection: "project",
   };
 
   function $(sel) { return document.querySelector(sel); }
   function $all(sel) { return Array.prototype.slice.call(document.querySelectorAll(sel)); }
 
-  function renderStepsNav(current) {
-    var nav = $("#stepsNav");
-    nav.innerHTML = "";
-    var idx = STEP_ORDER.indexOf(current);
-    STEP_ORDER.forEach(function (s, i) {
-      var dot = document.createElement("div");
-      dot.className = "step-dot" + (i < idx ? " done" : i === idx ? " active" : "");
-      nav.appendChild(dot);
+  // ---- nav / section switching ----
+  function unlockSections() {
+    $all(".nav-item").forEach(function (btn) {
+      var s = btn.getAttribute("data-section");
+      if (s === "project" || s === "doctors" || s === "settings") { btn.disabled = false; return; }
+      btn.disabled = !state.connected;
     });
+    var hint = $("#navHint");
+    if (hint) hint.style.display = state.connected ? "none" : "block";
   }
 
-  function goTo(step) {
-    $all(".panel").forEach(function (p) { p.classList.remove("active"); });
-    var target = document.querySelector('.panel[data-step="' + step + '"]');
-    if (target) target.classList.add("active");
-    renderStepsNav(step);
-    if (step === "connect") loadConnectStep();
-    if (step === "scan") loadScan();
-    if (step === "configure") renderSecretFields();
-    if (step === "push") loadPushReady();
-    if (step === "build") renderBuildControls();
+  function switchSection(section) {
+    state.currentSection = section;
+    $all(".panel").forEach(function (p) { p.classList.toggle("active", p.getAttribute("data-section") === section); });
+    $all(".nav-item").forEach(function (btn) { btn.classList.toggle("active", btn.getAttribute("data-section") === section); });
+    if (section === "project") loadConnectStep();
+    if (section === "build") renderSecretFields();
+    if (section === "simulator") renderSimulatorSection();
+    if (section === "store") renderStoreSection();
+    if (section === "doctors") renderDoctorsSection();
+    if (section === "settings") renderSettingsSection();
   }
 
-  document.addEventListener("click", function (e) {
-    var btn = e.target.closest("[data-next]");
-    if (btn && !btn.disabled) goTo(btn.getAttribute("data-next"));
+  $all(".nav-item").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      switchSection(btn.getAttribute("data-section"));
+    });
   });
 
   async function api(path, opts) {
@@ -53,14 +66,13 @@
     } catch (err) {
       // fetch() itself threw (offline, DNS failure, CORS, etc). Every caller
       // already checks result.ok and re-enables its own button/shows its own
-      // error — normalize to that shape instead of letting a spinner (e.g.
-      // the Connect step's "Setting things up…") hang forever with no way
-      // to recover short of reloading the page.
+      // error — normalize to that shape instead of letting a spinner hang
+      // forever with no way to recover short of reloading the page.
       return { ok: false, detail: "Network error — couldn't reach the server. Check your connection and try again." };
     }
     if (res.status === 401) {
       // Session expired or was never established — send back through the
-      // purchase-verification/login flow rather than showing a dead wizard.
+      // purchase-verification/login flow rather than showing a dead page.
       window.location.href = "/login";
       return new Promise(function () {}); // never resolves; we're navigating away
     }
@@ -73,18 +85,40 @@
     }
   }
 
-  // ---- step: connect (repo picker — auth already happened before /app loaded) ----
+  // ---- section: Project (repo picker + "what's in this repo") ----
 
   async function loadConnectStep() {
     var authStatus = await api("/api/auth/status");
     state.login = authStatus.login || null;
     $("#whoAmI").textContent = state.login || "…";
 
+    if (state.connected && state.owner && state.repo) {
+      renderConnectedRepoCard();
+      return;
+    }
+
     var el = $("#repoStatus");
     el.innerHTML = '<p class="empty-state">Loading your repos…</p>';
+    $("#connectBtn").style.display = "inline-block";
     var reposResult = await api("/api/repos");
     state.repos = reposResult.ok ? reposResult.repos : [];
     renderRepoPicker();
+  }
+
+  function renderConnectedRepoCard() {
+    $("#repoStatus").innerHTML =
+      '<div class="status-line"><span class="status-badge ok">connected</span><span>' + escapeHtml(state.owner + "/" + state.repo) + "</span></div>" +
+      '<p class="hint" style="margin-top:8px;">Want a different repo? <a href="#" id="switchRepoLink">switch repos</a> — nothing about your current repo is touched until you connect a new one.</p>';
+    $("#connectBtn").style.display = "none";
+    var link = $("#switchRepoLink");
+    if (link) link.addEventListener("click", function (e) { e.preventDefault(); disconnectRepo(); });
+  }
+
+  function disconnectRepo() {
+    state.connected = false;
+    $("#projectScanWrap").style.display = "none";
+    unlockSections();
+    loadConnectStep();
   }
 
   function renderRepoPicker() {
@@ -94,7 +128,7 @@
       .join("");
     el.innerHTML =
       '<div class="field"><label>Use an existing repo</label>' +
-      '<select id="repoSelect"><option value="">Choose one…</option>' + options + '</select>' +
+      '<select id="repoSelect"><option value="">Choose one…</option>' + options + "</select>" +
       '<p class="hint">We only add the pipeline files (workflows, fastlane, docs) — anything already in the repo is left untouched.</p></div>' +
       '<div class="divider">or</div>' +
       '<div class="field"><label>Create a new repo</label>' +
@@ -105,18 +139,8 @@
       var opt = e.target.selectedOptions[0];
       if (!opt || !opt.value) { state.owner = null; state.repo = null; state.creatingNew = false; }
       else {
-        var newOwner = opt.getAttribute("data-owner");
-        var newRepo = opt.getAttribute("data-name");
-        // Picking a different repo than the one already connected means the
-        // user wants to switch targets, not just move on to the next step —
-        // re-enable Connect so a real POST /api/connect fires against the
-        // newly selected repo instead of the button staying permanently
-        // disabled from the earlier connection (see updateConnectButton()).
-        if (state.connected && (newOwner !== state.owner || newRepo !== state.repo)) {
-          state.connected = false;
-        }
-        state.owner = newOwner;
-        state.repo = newRepo;
+        state.owner = opt.getAttribute("data-owner");
+        state.repo = opt.getAttribute("data-name");
         state.defaultBranch = opt.getAttribute("data-branch") || "main";
         state.creatingNew = false;
         $("#newRepoName").value = "";
@@ -125,9 +149,6 @@
     });
     $("#newRepoName").addEventListener("input", function (e) {
       if (e.target.value.trim()) {
-        // Typing a brand-new repo name is also switching targets — same
-        // reasoning as the repoSelect branch above.
-        if (state.connected) state.connected = false;
         state.creatingNew = true;
         state.owner = null;
         state.repo = null;
@@ -141,12 +162,11 @@
   }
 
   function updateConnectButton() {
-    var ready = state.connected ? false : (!!(state.owner && state.repo) || (state.creatingNew && $("#newRepoName") && $("#newRepoName").value.trim()));
+    var ready = !!(state.owner && state.repo) || (state.creatingNew && $("#newRepoName") && $("#newRepoName").value.trim());
     $("#connectBtn").disabled = !ready;
   }
 
   $("#connectBtn") && $("#connectBtn").addEventListener("click", async function (e) {
-    if (state.connected) return; // data-next handles navigation once already connected
     e.preventDefault();
     var resultEl = $("#connectResult");
     resultEl.innerHTML = '<p class="empty-state">Setting things up — this can take a few seconds…</p>';
@@ -169,25 +189,33 @@
     var addedNote = result.filesWritten === 0 ? "Repo already had every pipeline file." : "Added " + result.filesWritten + " file" + (result.filesWritten === 1 ? "" : "s") + ".";
     resultEl.innerHTML = '<div class="card"><h3>Connected</h3><p>Connected to <code>' + escapeHtml(state.owner + "/" + state.repo) + "</code>. " + addedNote + "</p></div>";
     $("#repoPath").textContent = state.owner + "/" + state.repo;
-    goTo("scan");
+    renderConnectedRepoCard();
+    unlockSections();
+    await loadScan();
+    // First-time convenience: after connecting, the natural next stop is
+    // filling in signing setup — but every section stays reachable from
+    // here on, this is just where a first-time buyer would look next.
+    switchSection("build");
   });
 
-  // ---- step: scan ----
+  // ---- section: Project, part 2 ("what's in this repo") ----
   async function loadScan() {
+    if (!state.owner || !state.repo) return;
     var el = $("#scanResult");
+    $("#projectScanWrap").style.display = "block";
     el.innerHTML = '<p class="empty-state">Scanning .github/workflows…</p>';
     var result = await api("/api/scan?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo));
     state.scan = result;
 
     if (!result.ok) {
       el.innerHTML = '<div class="card"><h3>No workflows found</h3><p>Didn\'t find any <code>.yml</code> files under <code>.github/workflows</code> in this repo.</p></div>';
-      $("#toConfigure").disabled = true;
+      refreshDependentSections();
       return;
     }
 
     // Best-effort read of the buyer's own project files, alongside the
     // workflow scan above — never blocks Scan from finishing if this
-    // fails or comes back empty, it only pre-fills Configure's fields.
+    // fails or comes back empty, it only pre-fills Build & Sign's fields.
     state.detected = null;
     try {
       var projResult = await api(
@@ -195,13 +223,13 @@
         "&defaultBranch=" + encodeURIComponent(state.defaultBranch)
       );
       if (projResult.ok) state.detected = projResult.detected;
-    } catch (e) { /* Configure step just falls back to manual entry */ }
+    } catch (e) { /* Build & Sign just falls back to manual entry */ }
 
     var html = "";
 
     if (state.detected && (state.detected.bundleId || state.detected.packageName || state.detected.platform)) {
       var d = state.detected;
-      html += '<div class="card"><h3>Detected from your project</h3><p class="hint">Found by reading your repo\'s own project files — review these, they\'re pre-filled below but not locked in.</p><ul class="plain">';
+      html += '<div class="card"><h3>Detected from your project</h3><p class="hint">Found by reading your repo\'s own project files — review these, they\'re pre-filled in Build &amp; Sign but not locked in.</p><ul class="plain">';
       if (d.platform) html += "<li>Platform: <b>" + escapeHtml(d.platform) + "</b></li>";
       if (d.bundleId) html += "<li>iOS bundle ID: <b class=\"mono\">" + escapeHtml(d.bundleId) + "</b></li>";
       if (d.packageName) html += "<li>Android package name: <b class=\"mono\">" + escapeHtml(d.packageName) + "</b></li>";
@@ -230,12 +258,25 @@
     });
     html += "</div></div>";
     el.innerHTML = html;
-    $("#toConfigure").disabled = result.secrets.length === 0;
 
-    if (result.workflows.length > 0) state.workflowFile = result.workflows[0].file;
+    if (result.workflows.length > 0) {
+      state.workflowFile = result.workflows[0].file;
+      var simWf = result.workflows.find(function (w) { return /simulator/i.test(w.file) || /simulator/i.test(w.name); });
+      state.simulatorWorkflowFile = simWf ? simWf.file : null;
+    }
+
+    refreshDependentSections();
   }
 
-  // ---- step: configure ----
+  // Build & Sign / Simulator both render from state.scan — if either is
+  // the section currently on screen when a (re-)scan finishes, refresh it
+  // in place instead of leaving stale content up.
+  function refreshDependentSections() {
+    if (state.currentSection === "build") renderSecretFields();
+    if (state.currentSection === "simulator") renderSimulatorSection();
+  }
+
+  // ---- section: Build & Sign ----
   function fieldHtml(s) {
     var wrap = document.createElement("div");
     wrap.className = "field";
@@ -272,14 +313,25 @@
     }
     var detectedHint = detectedValue ? '<p class="hint"><span class="status-badge ok">detected</span> from your project — edit if this is wrong</p>' : "";
 
+    // Persistent-shell change from the old one-time wizard: this panel is
+    // now something you come back to, possibly minutes or days later, so
+    // re-rendering it must not silently drop whatever was already typed
+    // in — restore from state.secretValues (which detectedValue above may
+    // itself have just seeded) rather than always starting blank.
+    var existingTextValue = (!isFile && !isManual && state.secretValues[s.name] && state.secretValues[s.name].kind === "text") ? state.secretValues[s.name].value : null;
+    var existingManualValue = (isManual && state.secretValues[s.name] && state.secretValues[s.name].kind === "text") ? state.secretValues[s.name].value : null;
+    var existingFileName = (isFile && state.secretValues[s.name] && state.secretValues[s.name].kind === "file-base64") ? state.secretValues[s.name].filename : null;
+
     wrap.innerHTML =
       labelHtml + usedByHint + detectedHint +
       (isFile
-        ? '<input type="file" data-secret="' + s.name + '" data-kind="file" data-scope="' + s.scope + '">'
+        ? '<input type="file" data-secret="' + s.name + '" data-kind="file" data-scope="' + s.scope + '">' +
+          (existingFileName ? '<p class="hint">Already selected: ' + escapeHtml(existingFileName) + " — choose again to replace it.</p>" : "")
         : isManual
-        ? '<textarea data-secret="' + s.name + '" data-kind="text" data-scope="' + s.scope + '" placeholder="Paste the file contents here once you have it — see the label above for where to get it."></textarea>'
+        ? '<textarea data-secret="' + s.name + '" data-kind="text" data-scope="' + s.scope + '" placeholder="Paste the file contents here once you have it — see the label above for where to get it.">' +
+          (existingManualValue ? escapeHtml(existingManualValue) : "") + "</textarea>"
         : '<input type="' + (isSecretText ? "password" : "text") + '" data-secret="' + s.name + '" data-kind="text" data-scope="' + s.scope + '"' +
-          (detectedValue ? ' value="' + escapeHtml(detectedValue) + '"' : "") + ">");
+          (existingTextValue ? ' value="' + escapeHtml(existingTextValue) + '"' : "") + ">");
     return wrap;
   }
 
@@ -296,7 +348,11 @@
   function renderSecretFields() {
     var el = $("#secretFields");
     if (!state.scan || !state.scan.ok) {
-      el.innerHTML = '<p class="empty-state">Run the scan step first.</p>';
+      el.innerHTML = '<p class="empty-state">Connect a repo in Project first.</p>';
+      $("#pushBtn").disabled = true;
+      $("#autoSignCard").style.display = "none";
+      renderBuildControls();
+      updateDoctorAvailability();
       return;
     }
     el.innerHTML = "";
@@ -315,12 +371,15 @@
       el.appendChild(details);
     }
 
-    var hasSigningFields = state.scan.secrets.some(function (s) { return /PROFILE|MOBILEPROVISION|CERT|KEYSTORE/i.test(s.name); });
-    $("#signingDoctorCard").style.display = hasSigningFields ? "block" : "none";
+    $("#pushBtn").disabled = false;
+
     // Auto-sign only covers iOS (cert/profile), not Android keystores —
     // only show it when there's actually a cert/profile field it could fill.
     var hasIosSigningFields = state.scan.secrets.some(function (s) { return /PROFILE|MOBILEPROVISION|CERT/i.test(s.name); });
     $("#autoSignCard").style.display = hasIosSigningFields ? "block" : "none";
+
+    renderBuildControls();
+    updateDoctorAvailability();
   }
 
   // ---- Auto-sign: generate a cert/profile/.p12 via the buyer's own Apple API key ----
@@ -394,77 +453,6 @@
     btn.disabled = false;
   });
 
-  // ---- Signing Doctor (checks whatever cert/profile/keystore fields have been filled in above) ----
-  function findSecretValueByPattern(pattern) {
-    var name = Object.keys(state.secretValues).find(function (n) { return pattern.test(n); });
-    return name ? state.secretValues[name] : null;
-  }
-
-  // Shared by the Configure-step button AND the build-failure auto-check below
-  // (see pollBuildStatus) — one diagnosis engine, run from wherever it's useful,
-  // instead of a one-off click handler duplicated in two places.
-  function buildSigningDoctorRequestBody() {
-    var profile = findSecretValueByPattern(/PROFILE|MOBILEPROVISION/i);
-    var cert = findSecretValueByPattern(/CERT.*BASE64|DIST.*CERT/i);
-    var certPassword = findSecretValueByPattern(/CERT.*PASS|P12.*PASS/i);
-    var teamId = findSecretValueByPattern(/TEAM_?ID/i);
-    var bundleId = findSecretValueByPattern(/BUNDLE_?ID/i);
-    var keystore = findSecretValueByPattern(/KEYSTORE.*BASE64|ANDROID.*KEYSTORE/i);
-    var keystorePassword = findSecretValueByPattern(/KEYSTORE.*PASS/i);
-    var keyAlias = findSecretValueByPattern(/KEY.*ALIAS/i);
-    var keyPassword = findSecretValueByPattern(/KEY_?PASS(WORD)?/i);
-
-    if (!profile && !keystore) return null;
-
-    var body = {};
-    if (profile) {
-      body.profileBase64 = profile.base64;
-      if (teamId && teamId.value) body.expectedTeamId = teamId.value;
-      if (bundleId && bundleId.value) body.expectedBundleId = bundleId.value;
-      if (cert) {
-        body.certBase64 = cert.base64;
-        body.certPassword = certPassword ? certPassword.value : "";
-      }
-    }
-    if (keystore) {
-      body.androidKeystoreBase64 = keystore.base64;
-      body.androidKeystorePassword = keystorePassword ? keystorePassword.value : "";
-      if (keyAlias && keyAlias.value) body.androidKeyAlias = keyAlias.value;
-      if (keyPassword && keyPassword.value) body.androidKeyPassword = keyPassword.value;
-    }
-    return body;
-  }
-
-  // Closes the loop from the Configure step too: once you've checked (and
-  // fixed) your signing files here, push + rebuild without walking back
-  // through the wizard to do it.
-  function rebuildNow() {
-    goTo("build");
-    if ($("#workflowSelect") && state.workflowFile) $("#workflowSelect").value = state.workflowFile;
-    triggerBuild();
-  }
-
-  $("#signingDoctorBtn") && $("#signingDoctorBtn").addEventListener("click", async function () {
-    var out = $("#signingDoctorOutput");
-    out.style.display = "block";
-    out.textContent = "Checking…";
-    if ($("#signingRebuildBtn")) $("#signingRebuildBtn").style.display = "none";
-
-    var body = buildSigningDoctorRequestBody();
-    if (!body) {
-      out.textContent = "Choose a provisioning profile and/or an Android keystore file above first.";
-      return;
-    }
-
-    var result = await api("/api/diagnose-signing", { method: "POST", body: JSON.stringify(body) });
-    out.textContent = result.output || "(no output)";
-    if (state.connected && state.workflowFile && $("#signingRebuildBtn")) {
-      $("#signingRebuildBtn").style.display = "inline-block";
-    }
-  });
-
-  $("#signingRebuildBtn") && $("#signingRebuildBtn").addEventListener("click", rebuildNow);
-
   document.addEventListener("change", async function (e) {
     var input = e.target.closest('input[data-kind="file"]');
     if (!input) return;
@@ -497,17 +485,13 @@
     });
   }
 
-  // ---- step: push ----
-  function loadPushReady() {
-    $("#pushBtn").disabled = false;
-  }
-
+  // ---- section: Build & Sign, part 2 (push secrets) ----
   $("#pushBtn") && $("#pushBtn").addEventListener("click", async function () {
     var el = $("#pushResult");
     el.innerHTML = "";
     var names = Object.keys(state.secretValues);
     if (names.length === 0) {
-      el.innerHTML = '<p class="empty-state">Nothing filled in yet — go back and fill in at least one field.</p>';
+      el.innerHTML = '<p class="empty-state">Nothing filled in yet — fill in at least one field above.</p>';
       return;
     }
     for (var i = 0; i < names.length; i++) {
@@ -523,14 +507,13 @@
         '<span class="status-badge ' + (result.ok ? "ok" : "fail") + '">' + (result.ok ? "pushed" : "failed") + "</span><span>" +
         escapeHtml(name) + "</span>" + (result.ok ? "" : ' <span class="hint">' + escapeHtml(result.detail || "") + "</span>");
     }
-    $("#toBuild").disabled = false;
   });
 
-  // ---- step: build ----
+  // ---- section: Build & Sign, part 3 (trigger + status) ----
   function renderBuildControls() {
     var el = $("#buildControls");
     if (!state.scan || !state.scan.ok || state.scan.workflows.length === 0) {
-      el.innerHTML = '<p class="empty-state">Run the scan step first.</p>';
+      el.innerHTML = '<p class="empty-state">Connect a repo in Project first.</p>';
       return;
     }
     var opts = state.scan.workflows
@@ -558,6 +541,7 @@
 
   async function pollBuildStatus() {
     var statusEl = $("#buildStatus");
+    if (state.currentSection !== "build") return; // stop polling once the buyer's navigated away
     var result = await api("/api/build-status?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&workflowFile=" + encodeURIComponent(state.workflowFile));
     if (!result.ok || !result.runs || result.runs.length === 0) {
       statusEl.innerHTML = '<p class="empty-state">No runs yet — checking again…</p>';
@@ -577,9 +561,10 @@
     }
 
     // If this run produced a Simulator-preview screenshot artifact, show it
-    // right here — best-effort: most workflows don't produce one, and a
+    // right here too — best-effort: most workflows don't produce one, and a
     // missing artifact isn't an error worth surfacing, just nothing to show.
-    // Shown regardless of success/failure: a crash screenshot is useful too.
+    // The Simulator section shows the same thing with a dedicated trigger;
+    // this is just so a generic build here isn't missing it if it applies.
     try {
       var artifactResult = await api("/api/build-artifact?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&runId=" + run.databaseId);
       if (artifactResult.ok && artifactResult.imageDataUrl) {
@@ -610,7 +595,7 @@
         var sdHeading = document.createElement("p");
         sdHeading.className = "hint";
         sdHeading.style.marginTop = "10px";
-        sdHeading.textContent = "Running Signing Doctor against the cert/profile/keystore fields from the Signing setup step, since a signing mismatch is the single hardest failure to spot by eye:";
+        sdHeading.textContent = "Running Signing Doctor against the cert/profile/keystore fields from Signing setup, since a signing mismatch is the single hardest failure to spot by eye:";
         statusEl.appendChild(sdHeading);
 
         var sdOut = document.createElement("div");
@@ -624,7 +609,7 @@
         var hint = document.createElement("p");
         hint.className = "hint";
         hint.style.marginTop = "10px";
-        hint.textContent = "No cert/profile/keystore field is filled in above to check automatically — if this looks like a signing error, go back to Signing setup and fill those in. If Apple later sends a rejection instead, paste it into Rejection Doctor below.";
+        hint.textContent = "No cert/profile/keystore field is filled in above to check automatically — if this looks like a signing error, fill those in above. If Apple later sends a rejection instead, paste it into Doctors → Rejection Doctor.";
         statusEl.appendChild(hint);
       }
     }
@@ -637,7 +622,264 @@
     statusEl.appendChild(rebuildBtn);
   }
 
-  // ---- step: rejection ----
+  // Closes the loop from Doctors too: once you've checked (and fixed) your
+  // signing files, or confirmed a rejection fix, push + rebuild without
+  // manually hunting back through the nav to do it.
+  function rebuildNow() {
+    switchSection("build");
+    if ($("#workflowSelect") && state.workflowFile) $("#workflowSelect").value = state.workflowFile;
+    triggerBuild();
+  }
+
+  // ---- section: Simulator ----
+  function renderSimulatorSection() {
+    var el = $("#simulatorBody");
+    if (!state.scan || !state.scan.ok) {
+      el.innerHTML = '<p class="empty-state">Connect a repo in Project first.</p>';
+      return;
+    }
+    if (!state.simulatorWorkflowFile) {
+      el.innerHTML =
+        '<div class="card"><h3>No Simulator workflow found</h3><p>This repo\'s pipeline doesn\'t include a Simulator-preview-style workflow yet. If you added the pipeline a while ago, reconnecting in Project picks up any new template files without touching your own code — or trigger any workflow manually from Build &amp; Sign and check its logs there.</p></div>';
+      return;
+    }
+    el.innerHTML =
+      '<div class="btn-row"><button class="btn" id="simTriggerBtn">Run Simulator check</button></div>' +
+      '<div id="simStatus"></div>';
+    $("#simTriggerBtn").addEventListener("click", triggerSimulatorCheck);
+  }
+
+  async function triggerSimulatorCheck() {
+    var statusEl = $("#simStatus");
+    statusEl.innerHTML = '<p class="empty-state">Triggering…</p>';
+    var result = await api("/api/trigger-build", { method: "POST", body: JSON.stringify({ owner: state.owner, repo: state.repo, workflowFile: state.simulatorWorkflowFile, ref: state.defaultBranch }) });
+    if (!result.ok) {
+      statusEl.innerHTML = '<div class="card"><h3>Couldn\'t trigger</h3><p>' + escapeHtml(result.detail || "") + "</p></div>";
+      return;
+    }
+    statusEl.innerHTML = '<p class="empty-state">Triggered — waiting for it to show up in the run list…</p>';
+    pollSimulatorStatus();
+  }
+
+  async function pollSimulatorStatus() {
+    var statusEl = $("#simStatus");
+    if (state.currentSection !== "simulator") return; // stop polling once the buyer's navigated away
+    var result = await api("/api/build-status?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&workflowFile=" + encodeURIComponent(state.simulatorWorkflowFile));
+    if (!result.ok || !result.runs || result.runs.length === 0) {
+      statusEl.innerHTML = '<p class="empty-state">No runs yet — checking again…</p>';
+      setTimeout(pollSimulatorStatus, 5000);
+      return;
+    }
+    var run = result.runs[0];
+    var badge = run.status === "completed" ? (run.conclusion === "success" ? "ok" : "fail") : "pending";
+    var label = run.status === "completed" ? run.conclusion : run.status;
+    statusEl.innerHTML =
+      '<div class="status-line"><span class="status-badge ' + badge + '">' + escapeHtml(label) + "</span><span>" +
+      escapeHtml(run.displayTitle || "run #" + run.databaseId) + "</span></div>";
+
+    if (run.status !== "completed") {
+      setTimeout(pollSimulatorStatus, 5000);
+      return;
+    }
+
+    try {
+      var artifactResult = await api("/api/build-artifact?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&runId=" + run.databaseId);
+      if (artifactResult.ok && artifactResult.imageDataUrl) {
+        var shotWrap = document.createElement("div");
+        shotWrap.className = "card";
+        shotWrap.innerHTML = '<h3>Screenshot</h3><p class="hint">A few seconds after launch — a sanity check, not a substitute for testing on a real device.</p>';
+        var shotImg = document.createElement("img");
+        shotImg.src = artifactResult.imageDataUrl;
+        shotImg.alt = "Simulator screenshot";
+        shotImg.className = "sim-screenshot large";
+        shotWrap.appendChild(shotImg);
+        statusEl.appendChild(shotWrap);
+      } else {
+        var noShot = document.createElement("p");
+        noShot.className = "hint";
+        noShot.style.marginTop = "10px";
+        noShot.textContent = artifactResult.detail || "No screenshot artifact on this run.";
+        statusEl.appendChild(noShot);
+      }
+    } catch (e) { /* no screenshot for this run — not an error, just nothing to show */ }
+
+    if (run.conclusion !== "success") {
+      var logs = await api("/api/build-logs?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&runId=" + run.databaseId);
+      var logDiv = document.createElement("div");
+      logDiv.className = "log-output";
+      logDiv.textContent = logs.log || "(couldn't fetch failed step logs)";
+      statusEl.appendChild(logDiv);
+    }
+
+    var rerunBtn = document.createElement("button");
+    rerunBtn.className = "btn btn-secondary";
+    rerunBtn.style.marginTop = "12px";
+    rerunBtn.textContent = "Run again";
+    rerunBtn.addEventListener("click", triggerSimulatorCheck);
+    statusEl.appendChild(rerunBtn);
+  }
+
+  // ---- section: Store Listing ----
+  function renderStoreSection() {
+    var el = $("#storeBody");
+    if (!state.connected) {
+      el.innerHTML = '<p class="empty-state">Connect a repo in Project first.</p>';
+      return;
+    }
+    el.innerHTML =
+      '<h2 class="section-heading" style="margin-top:0;">Listing copy</h2>' +
+      '<p class="section-sub">Pushed straight into <code>fastlane/metadata/</code> in your repo as plain text files — the same format fastlane\'s own <code>deliver</code> action reads, which your pipeline\'s App Store submission workflow already uses.</p>' +
+      '<div class="field"><label>App name <span class="hint">(max 30 characters)</span></label><input type="text" id="mdName" maxlength="30"></div>' +
+      '<div class="field"><label>Subtitle <span class="hint">(max 30 characters)</span></label><input type="text" id="mdSubtitle" maxlength="30"></div>' +
+      '<div class="field"><label>Promotional text <span class="hint">(max 170 characters — can be updated without a new build)</span></label><input type="text" id="mdPromo" maxlength="170"></div>' +
+      '<div class="field"><label>Description <span class="hint">(max 4000 characters)</span></label><textarea id="mdDescription" maxlength="4000" style="min-height:160px; font-family:var(--sans); font-size:14.5px;"></textarea></div>' +
+      '<div class="field"><label>Keywords <span class="hint">(comma-separated, max 100 characters total)</span></label><input type="text" id="mdKeywords" maxlength="100"></div>' +
+      '<div class="field"><label>Release notes <span class="hint">(what\'s new in this version)</span></label><textarea id="mdReleaseNotes" style="min-height:100px; font-family:var(--sans); font-size:14.5px;"></textarea></div>' +
+      '<div class="field"><label>Support URL</label><input type="text" id="mdSupportUrl" placeholder="https://"></div>' +
+      '<div class="field"><label>Marketing URL <span class="hint">(optional)</span></label><input type="text" id="mdMarketingUrl" placeholder="https://"></div>' +
+      '<div class="field"><label>Privacy policy URL</label><input type="text" id="mdPrivacyUrl" placeholder="https://"></div>' +
+      '<div class="field"><label>Primary category <span class="hint">(Apple\'s category name, e.g. BUSINESS, GAMES, PRODUCTIVITY — full list is in App Store Connect)</span></label><input type="text" id="mdPrimaryCategory" placeholder="e.g. PRODUCTIVITY"></div>' +
+      '<div class="field"><label>Secondary category <span class="hint">(optional)</span></label><input type="text" id="mdSecondaryCategory"></div>' +
+      '<div class="field"><label>Age rating</label><input type="text" id="mdAgeRating" placeholder="e.g. 4+"><p class="hint">Reference only — Apple\'s age rating is a set of content questions inside App Store Connect, not a single field, so this isn\'t pushed anywhere. Set it directly in App Store Connect.</p></div>' +
+      '<div class="btn-row"><button class="btn" id="pushMetadataBtn">Push metadata files</button></div>' +
+      '<div id="pushMetadataResult"></div>' +
+      '<h2 class="section-heading">Privacy category suggestions</h2>' +
+      '<p class="section-sub">Best-effort read of your repo\'s own Info.plist permission requests and a few well-known SDKs — suggestion-only, never submitted anywhere on your behalf. Review each one and fill in App Store Connect\'s own Privacy section yourself.</p>' +
+      '<div class="btn-row"><button class="btn btn-secondary" id="scanPrivacyBtn">Scan for privacy signals</button></div>' +
+      '<div id="privacyResult"></div>';
+
+    $("#pushMetadataBtn").addEventListener("click", pushMetadata);
+    $("#scanPrivacyBtn").addEventListener("click", scanPrivacy);
+  }
+
+  async function pushMetadata() {
+    var resultEl = $("#pushMetadataResult");
+    var body = {
+      owner: state.owner, repo: state.repo, defaultBranch: state.defaultBranch,
+      name: $("#mdName").value, subtitle: $("#mdSubtitle").value, promotionalText: $("#mdPromo").value,
+      description: $("#mdDescription").value, keywords: $("#mdKeywords").value, releaseNotes: $("#mdReleaseNotes").value,
+      supportUrl: $("#mdSupportUrl").value, marketingUrl: $("#mdMarketingUrl").value, privacyUrl: $("#mdPrivacyUrl").value,
+      primaryCategory: $("#mdPrimaryCategory").value, secondaryCategory: $("#mdSecondaryCategory").value,
+    };
+    resultEl.innerHTML = '<p class="empty-state">Pushing…</p>';
+    var result = await api("/api/push-metadata", { method: "POST", body: JSON.stringify(body) });
+    if (!result.ok) {
+      resultEl.innerHTML = '<div class="card"><h3>Couldn\'t push</h3><p>' + escapeHtml(result.detail || "") + "</p></div>";
+      return;
+    }
+    resultEl.innerHTML = '<div class="card"><h3>Pushed</h3><p>Wrote ' + result.filesWritten + " file" + (result.filesWritten === 1 ? "" : "s") + " to <code>fastlane/metadata/</code> in your repo.</p></div>";
+  }
+
+  async function scanPrivacy() {
+    var resultEl = $("#privacyResult");
+    resultEl.innerHTML = '<p class="empty-state">Reading your repo\'s own files…</p>';
+    var result = await api("/api/scan-privacy?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&defaultBranch=" + encodeURIComponent(state.defaultBranch));
+    if (!result.ok) {
+      resultEl.innerHTML = '<div class="card"><h3>Couldn\'t scan</h3><p>' + escapeHtml(result.detail || "") + "</p></div>";
+      return;
+    }
+    state.privacySignals = result.signals;
+    var s = result.signals;
+    if ((!s.infoPlistSignals || !s.infoPlistSignals.length) && (!s.sdkSignals || !s.sdkSignals.length)) {
+      resultEl.innerHTML = '<div class="card"><h3>Nothing detected</h3><p>Didn\'t find any recognized permission requests or known SDKs in this repo — that doesn\'t mean there\'s nothing to declare, just that this scan didn\'t recognize a pattern. Review App Store Connect\'s Privacy questionnaire directly.</p></div>';
+      return;
+    }
+    var html = "";
+    if (s.infoPlistSignals && s.infoPlistSignals.length) {
+      html += '<h3 style="font-size:15px;margin-top:16px;">From your Info.plist permission requests</h3>';
+      s.infoPlistSignals.forEach(function (sig) {
+        html += '<div class="privacy-signal"><div class="signal-title">' + escapeHtml(sig.capability) + ' <span class="mono hint">(' + escapeHtml(sig.key) + ")</span></div>";
+        if (sig.category) html += '<span class="signal-category">' + escapeHtml(sig.category) + "</span>";
+        if (sig.note) html += '<div class="signal-note">' + escapeHtml(sig.note) + "</div>";
+        html += "</div>";
+      });
+    }
+    if (s.sdkSignals && s.sdkSignals.length) {
+      html += '<h3 style="font-size:15px;margin-top:20px;">Known SDKs found in your dependencies</h3>';
+      html += '<p class="privacy-hedge">Weaker signal — presence of the SDK, not confirmation of what it does in your app. Verify against each SDK\'s own privacy documentation.</p>';
+      s.sdkSignals.forEach(function (sig) {
+        html += '<div class="privacy-signal"><div class="signal-title">' + escapeHtml(sig.sdk) + "</div>";
+        sig.categories.forEach(function (c) { html += '<span class="signal-category">' + escapeHtml(c) + "</span>"; });
+        html += "</div>";
+      });
+    }
+    resultEl.innerHTML = html;
+  }
+
+  // ---- section: Doctors ----
+  function updateDoctorAvailability() {
+    var hasSigningFields = !!(state.scan && state.scan.ok && state.scan.secrets.some(function (s) { return /PROFILE|MOBILEPROVISION|CERT|KEYSTORE/i.test(s.name); }));
+    $("#signingDoctorCard").style.display = hasSigningFields ? "block" : "none";
+    $("#signingDoctorEmpty").style.display = hasSigningFields ? "none" : "block";
+  }
+
+  function renderDoctorsSection() {
+    updateDoctorAvailability();
+  }
+
+  function findSecretValueByPattern(pattern) {
+    var name = Object.keys(state.secretValues).find(function (n) { return pattern.test(n); });
+    return name ? state.secretValues[name] : null;
+  }
+
+  // Shared by the Doctors-section button AND the build-failure auto-check
+  // (see pollBuildStatus/pollSimulatorStatus) — one diagnosis engine, run
+  // from wherever it's useful, instead of a one-off click handler
+  // duplicated in multiple places.
+  function buildSigningDoctorRequestBody() {
+    var profile = findSecretValueByPattern(/PROFILE|MOBILEPROVISION/i);
+    var cert = findSecretValueByPattern(/CERT.*BASE64|DIST.*CERT/i);
+    var certPassword = findSecretValueByPattern(/CERT.*PASS|P12.*PASS/i);
+    var teamId = findSecretValueByPattern(/TEAM_?ID/i);
+    var bundleId = findSecretValueByPattern(/BUNDLE_?ID/i);
+    var keystore = findSecretValueByPattern(/KEYSTORE.*BASE64|ANDROID.*KEYSTORE/i);
+    var keystorePassword = findSecretValueByPattern(/KEYSTORE.*PASS/i);
+    var keyAlias = findSecretValueByPattern(/KEY.*ALIAS/i);
+    var keyPassword = findSecretValueByPattern(/KEY_?PASS(WORD)?/i);
+
+    if (!profile && !keystore) return null;
+
+    var body = {};
+    if (profile) {
+      body.profileBase64 = profile.base64;
+      if (teamId && teamId.value) body.expectedTeamId = teamId.value;
+      if (bundleId && bundleId.value) body.expectedBundleId = bundleId.value;
+      if (cert) {
+        body.certBase64 = cert.base64;
+        body.certPassword = certPassword ? certPassword.value : "";
+      }
+    }
+    if (keystore) {
+      body.androidKeystoreBase64 = keystore.base64;
+      body.androidKeystorePassword = keystorePassword ? keystorePassword.value : "";
+      if (keyAlias && keyAlias.value) body.androidKeyAlias = keyAlias.value;
+      if (keyPassword && keyPassword.value) body.androidKeyPassword = keyPassword.value;
+    }
+    return body;
+  }
+
+  $("#signingDoctorBtn") && $("#signingDoctorBtn").addEventListener("click", async function () {
+    var out = $("#signingDoctorOutput");
+    out.style.display = "block";
+    out.textContent = "Checking…";
+    if ($("#signingRebuildBtn")) $("#signingRebuildBtn").style.display = "none";
+
+    var body = buildSigningDoctorRequestBody();
+    if (!body) {
+      out.textContent = "Fill in a provisioning profile and/or an Android keystore file under Build & Sign first.";
+      return;
+    }
+
+    var result = await api("/api/diagnose-signing", { method: "POST", body: JSON.stringify(body) });
+    out.textContent = result.output || "(no output)";
+    if (state.connected && state.workflowFile && $("#signingRebuildBtn")) {
+      $("#signingRebuildBtn").style.display = "inline-block";
+    }
+  });
+
+  $("#signingRebuildBtn") && $("#signingRebuildBtn").addEventListener("click", rebuildNow);
+
+  // ---- section: Doctors, part 2 (rejection doctor) ----
   $("#rdBtn") && $("#rdBtn").addEventListener("click", async function () {
     var text = $("#rdInput").value;
     var result = await api("/api/diagnose-rejection", { method: "POST", body: JSON.stringify({ text: text }) });
@@ -687,11 +929,36 @@
 
   $("#rejectionRebuildBtn") && $("#rejectionRebuildBtn").addEventListener("click", rebuildNow);
 
+  // ---- section: Settings ----
+  function renderSettingsSection() {
+    $("#settingsWhoAmI").textContent = state.login || "…";
+    var repoInfo = $("#settingsRepoInfo");
+    var switchBtn = $("#switchRepoBtn");
+    if (state.connected && state.owner && state.repo) {
+      repoInfo.innerHTML = "Connected to <code>" + escapeHtml(state.owner + "/" + state.repo) + "</code> (branch <code>" + escapeHtml(state.defaultBranch) + "</code>).";
+      switchBtn.style.display = "inline-block";
+    } else {
+      repoInfo.textContent = "Not connected yet — pick one in Project.";
+      switchBtn.style.display = "none";
+    }
+  }
+
+  $("#switchRepoBtn") && $("#switchRepoBtn").addEventListener("click", function () {
+    disconnectRepo();
+    switchSection("project");
+  });
+
+  $("#signOutBtn") && $("#signOutBtn").addEventListener("click", async function () {
+    await api("/api/logout", { method: "POST" });
+    window.location.href = "https://macless.dev/";
+  });
+
   function escapeHtml(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
     });
   }
 
-  goTo("connect");
+  unlockSections();
+  switchSection("project");
 })();
