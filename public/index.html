@@ -15,124 +15,146 @@
   </div>
 </header>
 
-<div class="wrap">
-  <div class="steps-nav" id="stepsNav"></div>
+<div class="app-shell">
+  <nav class="side-nav" id="sideNav">
+    <button class="nav-item" data-section="project" type="button">Project</button>
+    <button class="nav-item" data-section="build" type="button" disabled>Build &amp; Sign</button>
+    <button class="nav-item" data-section="simulator" type="button" disabled>Simulator</button>
+    <button class="nav-item" data-section="store" type="button" disabled>Store Listing</button>
+    <button class="nav-item" data-section="doctors" type="button">Doctors</button>
+    <button class="nav-item" data-section="settings" type="button">Settings</button>
+    <p class="nav-hint" id="navHint">Connect a repo in Project to unlock the rest.</p>
+  </nav>
+
+  <main class="content-area">
+
+    <!-- Project: connect a repo, see what's in it -->
+    <section class="panel" data-section="project">
+      <h1 class="section-title">Project</h1>
+      <p class="section-sub">You're signed in as <strong id="whoAmI">…</strong>. Pick the GitHub repo for the app you're shipping — everything happens through GitHub's API with your own account; nothing is ever downloaded or hosted anywhere else.</p>
+
+      <div class="card" id="repoCard">
+        <h3>Choose a repo</h3>
+        <div id="repoStatus"><p class="empty-state">Loading your repos…</p></div>
+      </div>
+
+      <div id="connectResult"></div>
+
+      <div class="btn-row">
+        <button class="btn" id="connectBtn" disabled>Connect</button>
+      </div>
+
+      <div id="projectScanWrap" style="display:none;">
+        <h2 class="section-heading">What's in this repo</h2>
+        <p class="section-sub">Read directly from your <code>.github/workflows/</code> files and your own project's own settings — not a hardcoded list, so this always matches whatever you actually have, and stays here to check back on any time.</p>
+        <div id="scanResult"><p class="empty-state">Scanning…</p></div>
+      </div>
+    </section>
+
+    <!-- Build & Sign: configure secrets, push them, trigger a build -->
+    <section class="panel" data-section="build">
+      <h1 class="section-title">Build &amp; Sign</h1>
+      <p class="section-sub">Fill in what your workflows need, push them to GitHub, and trigger a build — all on one page, and safe to come back to any time your signing files change.</p>
+
+      <h2 class="section-heading">Signing setup</h2>
+      <p class="section-sub">Signing Doctor also runs for real as the first step of your build on GitHub's own runners — filling these in here is just a faster way to catch a bad cert/profile pairing before you even push.</p>
+      <div class="card" id="autoSignCard" style="display:none;">
+        <h3>Skip the manual cert setup</h3>
+        <p>Have an App Store Connect API key (Team-scoped)? Macless can generate your distribution certificate and provisioning profile directly through Apple's own API, using your own Apple Developer account — no manual portal clicking, and the key itself is never stored.</p>
+        <div class="field">
+          <label>Key ID</label>
+          <input type="text" id="autoSignKeyId">
+        </div>
+        <div class="field">
+          <label>Issuer ID</label>
+          <input type="text" id="autoSignIssuerId">
+        </div>
+        <div class="field">
+          <label>Bundle identifier</label>
+          <input type="text" id="autoSignBundleId" placeholder="com.example.app">
+        </div>
+        <div class="field">
+          <label>.p8 API key file</label>
+          <input type="file" id="autoSignP8File" accept=".p8">
+        </div>
+        <button class="btn btn-secondary" id="autoSignBtn">Generate signing files</button>
+        <div id="autoSignStatus" style="margin-top:10px;"></div>
+      </div>
+      <div id="secretFields"><p class="empty-state">Connect a repo in Project first.</p></div>
+
+      <h2 class="section-heading">Push to GitHub</h2>
+      <p class="section-sub">Sent directly via the GitHub API, using the account you connected — nothing passes through or is stored by Macless beyond an encrypted copy of your GitHub token.</p>
+      <div id="pushResult"></div>
+      <div class="btn-row">
+        <button class="btn" id="pushBtn" disabled>Push secrets</button>
+      </div>
+
+      <h2 class="section-heading">Build</h2>
+      <p class="section-sub">Runs on your own GitHub Actions minutes — this just triggers it and watches the result.</p>
+      <div id="buildControls"><p class="empty-state">Connect a repo in Project first.</p></div>
+      <div id="buildStatus"></div>
+    </section>
+
+    <!-- Simulator: pass/fail check with a screenshot, focused on the simulator-preview workflow -->
+    <section class="panel" data-section="simulator">
+      <h1 class="section-title">Simulator</h1>
+      <p class="section-sub">A pass/fail Simulator check with a screenshot, straight from your own GitHub Actions runs — a crash after launch is caught here, not just a blank success screen.</p>
+      <div id="simulatorBody"><p class="empty-state">Connect a repo in Project first.</p></div>
+    </section>
+
+    <!-- Store Listing: metadata generation + privacy-category suggestions -->
+    <section class="panel" data-section="store">
+      <h1 class="section-title">Store Listing</h1>
+      <p class="section-sub">Write your App Store listing copy once here, and push it straight into <code>fastlane/metadata/</code> — the same files your pipeline's submission workflow already knows how to read.</p>
+      <div id="storeBody"><p class="empty-state">Connect a repo in Project first.</p></div>
+    </section>
+
+    <!-- Doctors: Signing Doctor + Rejection Doctor -->
+    <section class="panel" data-section="doctors">
+      <h1 class="section-title">Doctors</h1>
+      <p class="section-sub">Two independent checks: Signing Doctor catches a bad cert/profile pairing before you push, Rejection Doctor translates an Apple rejection into what to actually do about it.</p>
+
+      <h2 class="section-heading">Signing Doctor</h2>
+      <div class="card" id="signingDoctorCard" style="display:none;">
+        <h3>Check your cert/profile/keystore</h3>
+        <p>Checks whatever certificate/profile/keystore files you've filled in under Build &amp; Sign, before anything gets pushed — expiry, Team ID, bundle ID, and the one that's genuinely hard to spot by eye: whether your certificate and provisioning profile are actually a matching pair.</p>
+        <button class="btn btn-secondary" id="signingDoctorBtn">Check with Signing Doctor</button>
+        <div class="log-output" id="signingDoctorOutput" style="display:none;"></div>
+        <button class="btn" id="signingRebuildBtn" style="display:none; margin-top:12px;">Rebuild now</button>
+      </div>
+      <p class="empty-state" id="signingDoctorEmpty">Fill in a certificate/profile or Android keystore under Build &amp; Sign first — this checks whatever you've typed in there.</p>
+
+      <h2 class="section-heading" style="margin-top:36px;">Rejection Doctor</h2>
+      <p class="section-sub">If Apple sends back a rejection, paste it here — same tool as macless.dev/rejection-doctor.html, built right in. Works even before you've connected a repo.</p>
+      <div class="field">
+        <textarea id="rdInput" placeholder="Paste Apple's rejection message here…"></textarea>
+      </div>
+      <button class="btn" id="rdBtn">Diagnose</button>
+      <div id="rdCount" class="hint" style="margin-top:12px;"></div>
+      <div id="rdResults"></div>
+      <div id="rejectionRebuildWrap" style="display:none; margin-top:16px;">
+        <p class="hint" style="margin-bottom:8px;">Already pushed the fix? Re-run the build to confirm it — no need to leave this page.</p>
+        <button class="btn" id="rejectionRebuildBtn">Rebuild now</button>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section class="panel" data-section="settings">
+      <h1 class="section-title">Settings</h1>
+      <div class="card">
+        <h3>Account</h3>
+        <p>Signed in as <strong id="settingsWhoAmI">…</strong>.</p>
+        <button class="btn btn-secondary" id="signOutBtn" style="margin-top:12px;">Sign out</button>
+      </div>
+      <div class="card">
+        <h3>Connected repo</h3>
+        <p id="settingsRepoInfo">Not connected yet — pick one in Project.</p>
+        <button class="btn btn-secondary" id="switchRepoBtn" style="margin-top:12px; display:none;">Switch repo</button>
+      </div>
+    </section>
+
+  </main>
 </div>
-
-<main class="wrap">
-
-  <!-- 1: connect (you're already signed in to GitHub by the time you land here — this step just picks/creates the repo) -->
-  <section class="panel" data-step="connect">
-    <h1 class="step-title">Connect your project</h1>
-    <p class="step-sub">You're signed in as <strong id="whoAmI">…</strong>. Pick the GitHub repo for the app you're shipping — everything happens through GitHub's API with your own account; nothing is ever downloaded or hosted anywhere else.</p>
-
-    <div class="card" id="repoCard">
-      <h3>Choose a repo</h3>
-      <div id="repoStatus"><p class="empty-state">Loading your repos…</p></div>
-    </div>
-
-    <div id="connectResult"></div>
-
-    <div class="btn-row">
-      <button class="btn" id="connectBtn" data-next="scan" disabled>Connect &amp; continue</button>
-    </div>
-  </section>
-
-  <!-- 2: scan -->
-  <section class="panel" data-step="scan">
-    <h1 class="step-title">What's in this repo</h1>
-    <p class="step-sub">Read directly from your <code>.github/workflows/</code> files — not a hardcoded list, so this always matches whatever version of the pipeline you actually have.</p>
-    <div id="scanResult"><p class="empty-state">Scanning…</p></div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" data-next="connect">Back</button>
-      <button class="btn" id="toConfigure" data-next="configure" disabled>Continue</button>
-    </div>
-  </section>
-
-  <!-- 3: configure secrets -->
-  <section class="panel" data-step="configure">
-    <h1 class="step-title">Signing setup</h1>
-    <p class="step-sub">Fill in what each workflow needs. Signing Doctor also runs for real as the first step of your build on GitHub's own runners — this is just a faster way to catch a bad cert/profile pairing before you even push.</p>
-    <div class="card" id="autoSignCard" style="display:none;">
-      <h3>Skip the manual cert setup</h3>
-      <p>Have an App Store Connect API key (Team-scoped)? Macless can generate your distribution certificate and provisioning profile directly through Apple's own API, using your own Apple Developer account — no manual portal clicking, and the key itself is never stored.</p>
-      <div class="field">
-        <label>Key ID</label>
-        <input type="text" id="autoSignKeyId">
-      </div>
-      <div class="field">
-        <label>Issuer ID</label>
-        <input type="text" id="autoSignIssuerId">
-      </div>
-      <div class="field">
-        <label>Bundle identifier</label>
-        <input type="text" id="autoSignBundleId" placeholder="com.example.app">
-      </div>
-      <div class="field">
-        <label>.p8 API key file</label>
-        <input type="file" id="autoSignP8File" accept=".p8">
-      </div>
-      <button class="btn btn-secondary" id="autoSignBtn">Generate signing files</button>
-      <div id="autoSignStatus" style="margin-top:10px;"></div>
-    </div>
-    <div id="secretFields"></div>
-    <div class="card" id="signingDoctorCard" style="display:none;">
-      <h3>Signing Doctor</h3>
-      <p>Checks the certificate/profile/keystore files above right here, before anything gets pushed — expiry, Team ID, bundle ID, and the one that's genuinely hard to spot by eye: whether your certificate and provisioning profile are actually a matching pair.</p>
-      <button class="btn btn-secondary" id="signingDoctorBtn">Check with Signing Doctor</button>
-      <div class="log-output" id="signingDoctorOutput" style="display:none;"></div>
-      <button class="btn" id="signingRebuildBtn" style="display:none; margin-top:12px;">Rebuild now</button>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" data-next="scan">Back</button>
-      <button class="btn" data-next="push">Continue</button>
-    </div>
-  </section>
-
-  <!-- 4: push secrets -->
-  <section class="panel" data-step="push">
-    <h1 class="step-title">Push to GitHub</h1>
-    <p class="step-sub">Sent directly via the GitHub API, using the account you connected — nothing passes through or is stored by Macless beyond an encrypted copy of your GitHub token.</p>
-    <div id="pushResult"></div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" data-next="configure">Back</button>
-      <button class="btn" id="pushBtn">Push secrets</button>
-      <button class="btn" data-next="build" id="toBuild" disabled>Continue</button>
-    </div>
-  </section>
-
-  <!-- 5: trigger + status -->
-  <section class="panel" data-step="build">
-    <h1 class="step-title">First build</h1>
-    <p class="step-sub">Runs on your own GitHub Actions minutes — this just triggers it and watches the result.</p>
-    <div id="buildControls"></div>
-    <div id="buildStatus"></div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" data-next="push">Back</button>
-      <button class="btn" data-next="rejection">Skip to Rejection Doctor</button>
-    </div>
-  </section>
-
-  <!-- 6: rejection doctor -->
-  <section class="panel" data-step="rejection">
-    <h1 class="step-title">Rejection Doctor</h1>
-    <p class="step-sub">If Apple sends back a rejection later, paste it here — same tool as macless.dev/rejection-doctor.html, built right in.</p>
-    <div class="field">
-      <textarea id="rdInput" placeholder="Paste Apple's rejection message here…"></textarea>
-    </div>
-    <button class="btn" id="rdBtn">Diagnose</button>
-    <div id="rdCount" class="hint" style="margin-top:12px;"></div>
-    <div id="rdResults"></div>
-    <div id="rejectionRebuildWrap" style="display:none; margin-top:16px;">
-      <p class="hint" style="margin-bottom:8px;">Already pushed the fix? Re-run the build to confirm it — no need to leave this page.</p>
-      <button class="btn" id="rejectionRebuildBtn">Rebuild now</button>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" data-next="build">Back</button>
-    </div>
-  </section>
-
-</main>
 
 <script src="/app/wizard.js"></script>
 </body>
