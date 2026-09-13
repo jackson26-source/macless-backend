@@ -24,6 +24,7 @@ import { encryptToken, decryptToken, signSession, verifySession as verifyCookie 
 import { scanRepoWorkflows } from "./lib/workflow-scan.js";
 import { scanProjectFiles } from "./lib/project-scan.js";
 import { extractFileFromZip } from "./lib/zip-extract.js";
+import { scanPrivacySignals } from "./lib/privacy-scan.js";
 import { diagnoseRejection, generateAppealLetter } from "./lib/rejection-doctor.js";
 import { diagnoseIosProfile, diagnoseAndroidKeystore, formatReport } from "./lib/signing-doctor.js";
 import { autoProvisionSigning, AscApiError } from "./lib/asc-auto-provision.js";
@@ -910,6 +911,69 @@ export default {
 
           const ext = extracted.fileName.toLowerCase().endsWith(".png") ? "png" : "jpeg";
           return json({ ok: true, imageDataUrl: `data:image/${ext};base64,${bytesToBase64(extracted.bytes)}`, fileName: extracted.fileName });
+        }
+
+        if (pathname === "/api/push-metadata" && request.method === "POST") {
+          // Store Listing step (Phase 4 part 1): writes the buyer's own
+          // typed listing copy straight into fastlane/metadata/ using the
+          // same commitFiles primitive /api/connect already uses to push
+          // the pipeline template itself. Deliberately limited to the
+          // handful of fields fastlane's `deliver` documents as simple,
+          // single-value text files -- locale-specific copy plus the two
+          // non-localized category files. Age rating is NOT included: per
+          // fastlane's own docs it isn't a text file at all but a set of
+          // content-question answers (a separate rating_config.json a
+          // buyer would build by hand), so guessing at that shape here
+          // would risk silently submitting wrong answers to Apple -- same
+          // reasoning Signing Doctor's whole design is built on.
+          const body = await readJson(request);
+          if (!body.owner || !body.repo) return json({ ok: false, detail: "owner and repo are required." }, 400);
+          const locale = (body.locale || "en-US").trim();
+          if (!/^[a-zA-Z]{2}(-[a-zA-Z0-9]+)?$/.test(locale)) return json({ ok: false, detail: "That doesn't look like a real locale code (expected something like en-US)." }, 400);
+
+          const METADATA_FIELD_LIMITS = { name: 30, subtitle: 30, promotionalText: 170, keywords: 100, description: 4000, releaseNotes: 4000 };
+          for (const field of Object.keys(METADATA_FIELD_LIMITS)) {
+            if (typeof body[field] === "string" && body[field].length > METADATA_FIELD_LIMITS[field]) {
+              return json({ ok: false, detail: `${field} is ${body[field].length} characters -- Apple's own limit for this field is ${METADATA_FIELD_LIMITS[field]}.` }, 400);
+            }
+          }
+
+          const files = {};
+          const localeField = (name, value) => {
+            const v = typeof value === "string" ? value.trim() : "";
+            if (v) files[`fastlane/metadata/${locale}/${name}.txt`] = v;
+          };
+          localeField("name", body.name);
+          localeField("subtitle", body.subtitle);
+          localeField("description", body.description);
+          localeField("keywords", body.keywords);
+          localeField("promotional_text", body.promotionalText);
+          localeField("release_notes", body.releaseNotes);
+          localeField("support_url", body.supportUrl);
+          localeField("marketing_url", body.marketingUrl);
+          localeField("privacy_url", body.privacyUrl);
+          if (typeof body.primaryCategory === "string" && body.primaryCategory.trim()) files["fastlane/metadata/primary_category.txt"] = body.primaryCategory.trim();
+          if (typeof body.secondaryCategory === "string" && body.secondaryCategory.trim()) files["fastlane/metadata/secondary_category.txt"] = body.secondaryCategory.trim();
+
+          if (Object.keys(files).length === 0) return json({ ok: false, detail: "Nothing to push -- fill in at least one field." }, 400);
+
+          const commit = await githubApi.commitFiles(buyer.token, body.owner, body.repo, body.defaultBranch || "main", files, "Add App Store metadata via Macless Store Listing");
+          if (!commit.ok) return json({ ok: false, detail: commit.detail }, 400);
+          return json({ ok: true, filesWritten: commit.filesWritten, files: Object.keys(files) });
+        }
+
+        if (pathname === "/api/scan-privacy" && request.method === "GET") {
+          // Store Listing step (Phase 4 part 2): best-effort, suggestion-only
+          // read of the buyer's own repo for privacy-relevant signals (see
+          // privacy-scan.js's header for why this never writes anywhere and
+          // never claims certainty). The buyer reviews this and fills in
+          // App Store Connect's own Privacy section themselves.
+          const owner = url.searchParams.get("owner");
+          const repo = url.searchParams.get("repo");
+          const defaultBranch = url.searchParams.get("defaultBranch") || "main";
+          if (!owner || !repo) return json({ ok: false, detail: "owner and repo query params are required." }, 400);
+          const signals = await scanPrivacySignals(buyer.token, owner, repo, defaultBranch);
+          return json({ ok: true, signals });
         }
 
         return json({ ok: false, detail: "no such endpoint" }, 404);
