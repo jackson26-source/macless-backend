@@ -1,5 +1,10 @@
 /* Adapted from macless-site's assets/site.css design tokens, so this feels
-   like the rest of macless.dev rather than a generic admin-tool UI. */
+   like the rest of macless.dev rather than a generic admin-tool UI.
+
+   Restructured (Phase 3) from a linear step-by-step wizard into a
+   persistent left-nav app shell — Project / Build & Sign / Simulator /
+   Store Listing / Doctors / Settings are all standing pages you can jump
+   to any time, not steps that finish and disappear. */
 :root{
   --bg: #faf8f3;
   --bg-panel: #f2efe6;
@@ -23,23 +28,40 @@ body{ background: var(--bg); color: var(--text); font-family: var(--sans); font-
 code, .mono{ font-family: var(--mono); }
 h1, h2{ font-family: var(--serif); font-weight: 700; }
 
-header.site{ padding: 24px 0; border-bottom: 1px solid var(--border); }
-.site-inner{ display:flex; align-items:center; justify-content:space-between; max-width:760px; margin:0 auto; padding:0 24px; }
+header.site{ padding: 20px 0; border-bottom: 1px solid var(--border); }
+.site-inner{ display:flex; align-items:center; justify-content:space-between; max-width:1040px; margin:0 auto; padding:0 24px; }
 .wordmark{ font-family: var(--serif); font-weight:700; font-size:18px; }
 .repo-path{ font-family: var(--mono); font-size: 12.5px; color: var(--text-faint); }
 
-/* ---- step progress ---- */
-.steps-nav{ display:flex; gap: 6px; padding: 18px 0; }
-.step-dot{ flex:1; height: 4px; border-radius: 2px; background: var(--border); }
-.step-dot.done{ background: var(--ok); }
-.step-dot.active{ background: var(--accent); }
+/* ---- app shell: persistent left nav + content area ---- */
+.app-shell{ display:flex; align-items:flex-start; max-width:1040px; margin:0 auto; }
+.side-nav{ width: 200px; flex-shrink:0; padding: 24px 16px 40px 24px; position:sticky; top:0; }
+.side-nav .nav-item{
+  display:block; width:100%; text-align:left; padding: 10px 12px; margin-bottom: 3px;
+  border-radius: 7px; font-size: 14px; font-weight:600; font-family: var(--sans);
+  color: var(--text-dim); background: none; border: 1px solid transparent; cursor:pointer;
+}
+.side-nav .nav-item:hover:not(:disabled){ background: var(--bg-panel); color: var(--text); }
+.side-nav .nav-item.active{ background: var(--text); color: #fdfcf9; }
+.side-nav .nav-item:disabled{ opacity:.4; cursor:not-allowed; }
+.side-nav .nav-hint{ font-size: 11.5px; color: var(--text-faint); padding: 10px 12px 0; line-height:1.5; }
 
-main{ padding: 20px 0 120px; }
+.content-area{ flex:1; min-width:0; padding: 24px 24px 120px; border-left: 1px solid var(--border); }
 .panel{ display:none; }
 .panel.active{ display:block; }
 
-h1.step-title{ font-size: 26px; margin-bottom: 10px; }
-p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-width: 560px; }
+h1.section-title{ font-size: 26px; margin-bottom: 10px; }
+h2.section-heading{ font-size: 18px; margin: 32px 0 6px; }
+h2.section-heading:first-of-type{ margin-top: 20px; }
+p.section-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 20px; max-width: 620px; }
+
+@media (max-width: 780px){
+  .app-shell{ flex-direction: column; }
+  .side-nav{ width:100%; position:static; padding: 16px 20px 0; display:flex; flex-wrap:wrap; gap:6px; }
+  .side-nav .nav-item{ width:auto; margin-bottom:0; }
+  .side-nav .nav-hint{ width:100%; padding: 8px 4px 0; }
+  .content-area{ border-left:none; border-top: 1px solid var(--border); padding: 20px 20px 100px; }
+}
 
 .btn{ display:inline-block; padding: 12px 20px; border-radius: 6px; font-weight:600; font-size:14.5px;
   text-decoration:none; cursor:pointer; border: 1px solid transparent; background: var(--text); color: #fdfcf9; }
@@ -47,7 +69,7 @@ p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-
 .btn:disabled{ opacity: .45; cursor: not-allowed; }
 .btn-secondary{ background: transparent; color: var(--text); border: 1px solid var(--border); }
 .btn-secondary:hover{ background: var(--bg-panel); }
-.btn-row{ display:flex; gap: 12px; margin-top: 28px; margin-bottom: 24px; }
+.btn-row{ display:flex; gap: 12px; margin-top: 20px; margin-bottom: 24px; flex-wrap:wrap; }
 
 .card{ margin: 16px 0; padding: 20px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px; }
 .card h3{ font-size: 15px; margin-bottom: 8px; }
@@ -55,7 +77,8 @@ p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-
 .card ul.plain{ list-style: none; margin: 10px 0 0; padding: 0; font-size: 14.5px; color: var(--text-dim); }
 .card ul.plain li{ padding: 4px 0; border-top: 1px solid var(--border); }
 .card ul.plain li:first-child{ border-top: none; }
-.sim-screenshot{ display:block; max-width: 240px; width:100%; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; }
+.sim-screenshot{ display:block; max-width: 280px; width:100%; margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; }
+.sim-screenshot.large{ max-width: 380px; }
 
 .field{ margin-bottom: 18px; }
 .field label{ display:block; font-size: 13px; font-weight:600; color: var(--text-dim); margin-bottom: 6px; }
@@ -71,6 +94,7 @@ p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-
 }
 .field label.checkbox{ display:flex; align-items:center; gap:8px; font-weight:400; }
 .field label.checkbox input{ width:auto; }
+.field .char-count{ font-size: 11.5px; color: var(--text-faint); margin-top: 4px; text-align:right; }
 .divider{ display:flex; align-items:center; gap:12px; color: var(--text-faint); font-size:12.5px; margin: 18px 0; text-transform:uppercase; letter-spacing:.04em; }
 .divider::before, .divider::after{ content:""; flex:1; height:1px; background: var(--border); }
 .field textarea{ min-height: 120px; font-family: var(--mono); font-size: 13px; resize: vertical; }
@@ -104,3 +128,12 @@ p.step-sub{ color: var(--text-dim); font-size: 15.5px; margin-bottom: 24px; max-
 .advanced summary{ cursor:pointer; padding: 12px 0; font-size: 13.5px; font-weight:600; color: var(--text-dim); }
 .advanced[open] summary{ margin-bottom: 4px; }
 .advanced .field{ margin-top: 14px; }
+
+/* ---- Store Listing + privacy signals ---- */
+.privacy-signal{ padding: 10px 0; border-top: 1px solid var(--border); font-size: 14px; }
+.privacy-signal:first-child{ border-top:none; }
+.privacy-signal .signal-title{ font-weight:600; }
+.privacy-signal .signal-category{ display:inline-block; margin: 2px 6px 2px 0; padding: 2px 8px; border-radius: 10px;
+  background: rgba(47,107,58,.12); color: var(--ok); font-size: 11.5px; font-weight:700; text-transform:uppercase; letter-spacing:.03em; }
+.privacy-signal .signal-note{ font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+.privacy-hedge{ font-size: 12px; color: var(--text-faint); margin: 4px 0 14px; text-transform:uppercase; letter-spacing:.03em; }
