@@ -577,7 +577,11 @@
         shotWrap.className = "card";
         shotWrap.innerHTML = '<h3>Simulator screenshot</h3><p class="hint">From this run\'s Simulator preview, a few seconds after launch — a sanity check, not a substitute for testing on a real device.</p>';
         var shotImg = document.createElement("img");
-        shotImg.src = artifactResult.imageDataUrl;
+        // Loaded as a same-origin image request (raw=1), not the data: URL
+        // the JSON above also returns -- macless.dev's site-wide CSP img-src
+        // doesn't allow data:, so a data: URL here would silently never
+        // render in any CSP-enforcing browser. 'self' already covers this.
+        shotImg.src = "/api/build-artifact?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&runId=" + run.databaseId + "&raw=1";
         shotImg.alt = "Simulator screenshot";
         shotImg.className = "sim-screenshot";
         shotWrap.appendChild(shotImg);
@@ -694,7 +698,10 @@
         shotWrap.className = "card";
         shotWrap.innerHTML = '<h3>Screenshot</h3><p class="hint">A few seconds after launch — a sanity check, not a substitute for testing on a real device.</p>';
         var shotImg = document.createElement("img");
-        shotImg.src = artifactResult.imageDataUrl;
+        // Same reasoning as the inline preview above: same-origin raw=1
+        // request instead of the data: URL, since the page's CSP img-src
+        // has no data: entry and would otherwise block this silently.
+        shotImg.src = "/api/build-artifact?owner=" + encodeURIComponent(state.owner) + "&repo=" + encodeURIComponent(state.repo) + "&runId=" + run.databaseId + "&raw=1";
         shotImg.alt = "Simulator screenshot";
         shotImg.className = "sim-screenshot large";
         shotWrap.appendChild(shotImg);
@@ -734,11 +741,11 @@
     el.innerHTML =
       '<h2 class="section-heading" style="margin-top:0;">Listing copy</h2>' +
       '<p class="section-sub">Pushed straight into <code>fastlane/metadata/</code> in your repo as plain text files — the same format fastlane\'s own <code>deliver</code> action reads, which your pipeline\'s App Store submission workflow already uses.</p>' +
-      '<div class="field"><label>App name <span class="hint">(max 30 characters)</span></label><input type="text" id="mdName" maxlength="30"></div>' +
-      '<div class="field"><label>Subtitle <span class="hint">(max 30 characters)</span></label><input type="text" id="mdSubtitle" maxlength="30"></div>' +
-      '<div class="field"><label>Promotional text <span class="hint">(max 170 characters — can be updated without a new build)</span></label><input type="text" id="mdPromo" maxlength="170"></div>' +
-      '<div class="field"><label>Description <span class="hint">(max 4000 characters)</span></label><textarea id="mdDescription" maxlength="4000" style="min-height:160px; font-family:var(--sans); font-size:14.5px;"></textarea></div>' +
-      '<div class="field"><label>Keywords <span class="hint">(comma-separated, max 100 characters total)</span></label><input type="text" id="mdKeywords" maxlength="100"></div>' +
+      '<div class="field"><label>App name <span class="hint">(max 30 characters)</span></label><input type="text" id="mdName" maxlength="30"><div class="char-count" id="mdNameCount">0 / 30</div></div>' +
+      '<div class="field"><label>Subtitle <span class="hint">(max 30 characters)</span></label><input type="text" id="mdSubtitle" maxlength="30"><div class="char-count" id="mdSubtitleCount">0 / 30</div></div>' +
+      '<div class="field"><label>Promotional text <span class="hint">(max 170 characters — can be updated without a new build)</span></label><input type="text" id="mdPromo" maxlength="170"><div class="char-count" id="mdPromoCount">0 / 170</div></div>' +
+      '<div class="field"><label>Description <span class="hint">(max 4000 characters)</span></label><textarea id="mdDescription" maxlength="4000" style="min-height:160px; font-family:var(--sans); font-size:14.5px;"></textarea><div class="char-count" id="mdDescriptionCount">0 / 4000</div></div>' +
+      '<div class="field"><label>Keywords <span class="hint">(comma-separated, max 100 characters total)</span></label><input type="text" id="mdKeywords" maxlength="100"><div class="char-count" id="mdKeywordsCount">0 / 100</div></div>' +
       '<div class="field"><label>Release notes <span class="hint">(what\'s new in this version)</span></label><textarea id="mdReleaseNotes" style="min-height:100px; font-family:var(--sans); font-size:14.5px;"></textarea></div>' +
       '<div class="field"><label>Support URL</label><input type="text" id="mdSupportUrl" placeholder="https://"></div>' +
       '<div class="field"><label>Marketing URL <span class="hint">(optional)</span></label><input type="text" id="mdMarketingUrl" placeholder="https://"></div>' +
@@ -755,6 +762,25 @@
 
     $("#pushMetadataBtn").addEventListener("click", pushMetadata);
     $("#scanPrivacyBtn").addEventListener("click", scanPrivacy);
+    // Apple's own limits are hard walls -- the browser's native maxlength
+    // silently truncates mid-word with zero indication when a buyer types
+    // or pastes past it (found live 2026-09-13: a 31-char subtitle got
+    // silently cut to "...RSVP styl"). A live counter can't undo a paste
+    // that already got truncated by the browser, but it means the buyer
+    // SEES they're at the wall instead of finding out after it's on the
+    // App Store -- same "never fail silently" posture as the server-side
+    // limit check in /api/push-metadata.
+    [["mdName", 30], ["mdSubtitle", 30], ["mdPromo", 170], ["mdDescription", 4000], ["mdKeywords", 100]].forEach(function (pair) {
+      var input = $("#" + pair[0]);
+      var counter = $("#" + pair[0] + "Count");
+      function update() {
+        var len = input.value.length;
+        counter.textContent = len + " / " + pair[1];
+        counter.style.color = len >= pair[1] ? "var(--fail)" : "";
+      }
+      input.addEventListener("input", update);
+      update();
+    });
   }
 
   async function pushMetadata() {
