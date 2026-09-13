@@ -77,7 +77,12 @@ function detectFromCapacitorConfig(text) {
   // Real capacitor.config.json is plain JSON; the .ts variant wraps the
   // same object in `export default { ... }`, so a targeted regex is more
   // robust here than trying to strip TS syntax down to valid JSON.
-  return { bundleId: firstMatch(text, /appId['"]?\s*:\s*['"]([a-zA-Z0-9.\-_]+)['"]/) };
+  // Capacitor has exactly one app-identifier field -- appId -- used for
+  // BOTH platforms (there's no separate Android identifier anywhere in
+  // this config), so the same detected value is the right default for
+  // both the iOS bundle ID and the Android package name.
+  const appId = firstMatch(text, /appId['"]?\s*:\s*['"]([a-zA-Z0-9.\-_]+)['"]/);
+  return { bundleId: appId, packageName: appId };
 }
 
 function detectFromExpoAppJson(text) {
@@ -160,11 +165,12 @@ async function scanProjectFiles(token, owner, repo, defaultBranch) {
         if (deploymentTarget) detected.deploymentTarget = deploymentTarget;
       }
     }
-    if (!detected.bundleId && capacitorConfigPaths.length > 0) {
+    if ((!detected.bundleId || !detected.packageName) && capacitorConfigPaths.length > 0) {
       const text = await getFileText(token, owner, repo, capacitorConfigPaths[0]);
       if (text) {
-        const { bundleId } = detectFromCapacitorConfig(text);
-        if (bundleId) detected.bundleId = bundleId;
+        const { bundleId, packageName } = detectFromCapacitorConfig(text);
+        if (bundleId && !detected.bundleId) detected.bundleId = bundleId;
+        if (packageName && !detected.packageName) detected.packageName = packageName;
       }
     }
     if ((!detected.bundleId || !detected.packageName) && expoAppJsonPaths.length > 0) {
