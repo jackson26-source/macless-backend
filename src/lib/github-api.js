@@ -60,7 +60,7 @@ async function whoAmI(token) {
 
 async function listRepos(token) {
   const r = await apiRequest("/user/repos?sort=updated&per_page=30", token);
-  if (!r.ok) return { ok: false, repos: [] };
+  if (!r.ok) return { ok: false, repos: [], detail: (r.json && r.json.message) || `GitHub returned ${r.status}` };
   return { ok: true, repos: r.json.map((repo) => ({ owner: repo.owner.login, name: repo.name, fullName: repo.full_name, defaultBranch: repo.default_branch })) };
 }
 
