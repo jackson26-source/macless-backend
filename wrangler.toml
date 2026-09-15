@@ -17,6 +17,7 @@ routes = [
   { pattern = "macless.dev/login*", zone_name = "macless.dev" },
   { pattern = "macless.dev/oauth/callback*", zone_name = "macless.dev" },
   { pattern = "macless.dev/app", zone_name = "macless.dev" },
+  { pattern = "macless.dev/reconnect", zone_name = "macless.dev" },
   { pattern = "macless.dev/app/*", zone_name = "macless.dev" },
   { pattern = "macless.dev/api/*", zone_name = "macless.dev" }
 ]
