@@ -80,10 +80,11 @@ function html(bodyHtml, title, status = 200) {
   return new Response(pageShell(bodyHtml, title), { status, headers: { "Content-Type": "text/html; charset=utf-8" } });
 }
 
-function errorPage(message, status = 400) {
+function errorPage(message, status = 400, actionHtml = "") {
   return html(
     `<h1>Couldn't verify that purchase</h1>
      <p>${message}</p>
+     ${actionHtml}
      <p>If you already paid and this keeps happening, email
      <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a> with your Stripe receipt and we'll sort it out directly.</p>`,
     "Macless — couldn't verify purchase",
@@ -590,7 +591,7 @@ export default {
 
       if (pathname === "/app" && request.method === "GET") {
         const buyer = await requireBuyer(request, env);
-        if (!buyer) return errorPage("You're not signed in (or your session expired). Use the link from your purchase confirmation email to reconnect.", 401);
+        if (!buyer) return errorPage("You're not signed in (or your session expired). Use the link from your purchase confirmation email to reconnect.", 401, '<p><a class="btn" href="/reconnect">Log in with GitHub</a></p>');
         return new Response(WIZARD_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
       if (pathname === "/app/wizard.js" && request.method === "GET") {
@@ -602,7 +603,7 @@ export default {
 
       if (pathname === "/app/autopilot" && request.method === "GET") {
         const buyer = await requireBuyer(request, env);
-        if (!buyer) return errorPage("You're not signed in (or your session expired). Use the link from your purchase confirmation email to reconnect.", 401);
+        if (!buyer) return errorPage("You're not signed in (or your session expired). Use the link from your purchase confirmation email to reconnect.", 401, '<p><a class="btn" href="/reconnect">Log in with GitHub</a></p>');
         const sessionIdParam = url.searchParams.get("session_id");
         if (sessionIdParam) {
           // Best-effort sync right after a Stripe Checkout redirect — the status
