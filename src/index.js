@@ -520,7 +520,7 @@ export default {
         }
         const state = await signSession(sessionId, env.SESSION_SECRET);
         const authorizeUrl = githubApi.authUrl(env.GITHUB_CLIENT_ID, redirectUri(env), state);
-        return Response.redirect(authorizeUrl, 302);
+        return Response.redirect(authorizeUrl, 302); } if (pathname === "/reconnect" && request.method === "GET") { const state = await signSession("reconnect", env.SESSION_SECRET); const authorizeUrl = githubApi.authUrl(env.GITHUB_CLIENT_ID, redirectUri(env), state); return Response.redirect(authorizeUrl, 302);
       }
 
       if (pathname === "/oauth/callback" && request.method === "GET") {
@@ -530,8 +530,8 @@ export default {
         // signSession/verifySession are generic HMAC sign/verify, reused here for the
         // OAuth state param — but a CSRF nonce shouldn't be valid for 30 days like the
         // session cookie is, so this one gets its own short window (10 min).
-        const sessionId = await verifyCookie(state, env.SESSION_SECRET, OAUTH_STATE_MAX_AGE_SECONDS);
-        if (!sessionId) return errorPage("This connection link looks tampered with or expired. Try connecting again from your purchase confirmation email — the link expires after 10 minutes for security.");
+        const statePayload = await verifyCookie(state, env.SESSION_SECRET, OAUTH_STATE_MAX_AGE_SECONDS);
+        if (!statePayload) return errorPage("This connection link looks tampered with or expired. Try connecting again from your purchase confirmation email — the link expires after 10 minutes for security.");
 
         const exchanged = await githubApi.exchangeCode(code, env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET, redirectUri(env));
         if (!exchanged.ok) return errorPage(`GitHub sign-in didn't complete: ${exchanged.detail}`);
@@ -539,7 +539,24 @@ export default {
         const who = await githubApi.whoAmI(exchanged.token);
         if (!who.ok) return errorPage("Couldn't read your GitHub account details after signing in. Try again.");
 
-        const encryptedToken = await encryptToken(exchanged.token, env.TOKEN_ENCRYPTION_KEY);
+                if (statePayload === "reconnect") {
+          const existingBuyer = await db.getBuyerByGithubId(env.DB, who.id);
+          if (!existingBuyer) {
+            return errorPage(
+              `We don't have a Macless purchase linked to the GitHub account <b>@${who.login}</b>. If you bought Macless with a different GitHub account, sign out of GitHub and try again with that one.`,
+              404
+            );
+          }
+          const reconnectToken = await encryptToken(exchanged.token, env.TOKEN_ENCRYPTION_KEY);
+          await db.upsertBuyer(env.DB, { githubLogin: who.login, githubId: who.id, encryptedToken: reconnectToken });
+          const reconnectCookie = await signSession(existingBuyer.id, env.SESSION_SECRET);
+          return new Response(null, {
+            status: 302,
+            headers: { Location: "/app", "Set-Cookie": sessionCookieHeader(reconnectCookie, env) },
+          });
+        }
+
+        const sessionId = statePayload;const encryptedToken = await encryptToken(exchanged.token, env.TOKEN_ENCRYPTION_KEY);
         const buyerId = await db.upsertBuyer(env.DB, { githubLogin: who.login, githubId: who.id, encryptedToken });
         await db.linkPurchaseToBuyer(env.DB, sessionId, buyerId);
 
