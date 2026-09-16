@@ -399,11 +399,16 @@
     if (!state.scan || !state.scan.secrets) return;
     state.autoFilled = state.autoFilled || {};
     state.scan.secrets.forEach(function (s) {
-      if (AUTO_SIGN_FIELD_PATTERNS.p12.test(s.name)) {
-        state.secretValues[s.name] = { kind: "file-base64", scope: s.scope, base64: result.p12Base64, filename: "signing.p12" };
-        state.autoFilled[s.name] = true;
-      } else if (AUTO_SIGN_FIELD_PATTERNS.p12Password.test(s.name)) {
+      // Password check MUST run before the p12-file check: DIST.*CERT (meant
+      // to catch IOS_DIST_CERT_P12_BASE64) also matches IOS_DIST_CERT_PASSWORD,
+      // and with the file-check first that overwrote the password field with
+      // the .p12 file's own base64 instead of the real password -- every
+      // auto-signed .p12 was then "unlockable" with nothing but its own bytes.
+      if (AUTO_SIGN_FIELD_PATTERNS.p12Password.test(s.name)) {
         state.secretValues[s.name] = { kind: "text", scope: s.scope, value: result.p12Password };
+        state.autoFilled[s.name] = true;
+      } else if (AUTO_SIGN_FIELD_PATTERNS.p12.test(s.name)) {
+        state.secretValues[s.name] = { kind: "file-base64", scope: s.scope, base64: result.p12Base64, filename: "signing.p12" };
         state.autoFilled[s.name] = true;
       } else if (AUTO_SIGN_FIELD_PATTERNS.profile.test(s.name)) {
         state.secretValues[s.name] = { kind: "file-base64", scope: s.scope, base64: result.profileBase64, filename: "profile.mobileprovision" };
