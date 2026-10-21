@@ -457,6 +457,13 @@ function randomPassword() {
   return bytesToBase64(bytes).replace(/[+/=]/g, "");
 }
 
+function sanitizeAppIdName(raw, fallbackIdentifier) {
+  const base = (raw && String(raw).trim()) || fallbackIdentifier || "";
+  const cleaned = base.replace(/[^A-Za-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  // Apple's own portal caps App ID names at 50 characters.
+  return (cleaned || "Macless App").slice(0, 50).trim() || "Macless App";
+}
+
 /**
  * The customer-facing entry point. Given a buyer's own ASC API credentials
  * (never persisted — held only in memory for this one call) and their
@@ -471,10 +478,11 @@ function randomPassword() {
  * plain-English "maximum number" error above rather than a raw 409.
  */
 async function autoProvisionSigning(creds, { bundleIdentifier, appName }) {
-  const { certificate, privateKeyPkcs8 } = await createCertificate(creds, `Macless: ${appName || bundleIdentifier}`);
-  const bundleId = await findOrCreateBundleId(creds, { identifier: bundleIdentifier, name: appName || bundleIdentifier });
+  const displayName = sanitizeAppIdName(appName, bundleIdentifier);
+  const { certificate, privateKeyPkcs8 } = await createCertificate(creds, `Macless: ${displayName}`);
+  const bundleId = await findOrCreateBundleId(creds, { identifier: bundleIdentifier, name: displayName });
   const profile = await createProfile(creds, {
-    name: `Macless ${appName || bundleIdentifier} App Store`,
+    name: `Macless ${displayName} App Store`,
     bundleIdResourceId: bundleId.id,
     certificateId: certificate.id,
   });
