@@ -75,7 +75,19 @@ jobs:
 
       - name: Build for Simulator (unsigned — no certificate needed)
         run: |
-          xcodebuild -workspace ios/App/App.xcworkspace \
+          # Capacitor 6 and earlier use CocoaPods and produce App.xcworkspace;
+          # Capacitor 7+ uses Swift Package Manager and produces only
+          # App.xcodeproj. Detect which this project has rather than assuming.
+          if [ -d "ios/App/App.xcworkspace" ]; then
+            XCODE_CONTAINER=(-workspace ios/App/App.xcworkspace)
+          elif [ -d "ios/App/App.xcodeproj" ]; then
+            XCODE_CONTAINER=(-project ios/App/App.xcodeproj)
+          else
+            echo "::error::Neither ios/App/App.xcworkspace nor ios/App/App.xcodeproj exists — the iOS platform was not generated."
+            exit 1
+          fi
+
+          xcodebuild "${XCODE_CONTAINER[@]}" \
             -scheme App \
             -configuration Debug \
             -destination "generic/platform=iOS Simulator" \
