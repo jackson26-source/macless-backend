@@ -181,10 +181,25 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_PROVISIONING_PROFILE_NAME }}
         run: |
-          echo "----- signing-relevant build settings before archive -----"
-          xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release -showBuildSettings 2>/dev/null | grep -E "CODE_SIGN|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|PRODUCT_BUNDLE_IDENTIFIER" || true
+          # Capacitor 6 and earlier use CocoaPods and produce App.xcworkspace.
+          # Capacitor 7+ uses Swift Package Manager and produces only
+          # App.xcodeproj — there is no workspace for xcodebuild to open, and
+          # pointing at one fails with "does not exist" (exit code 66).
+          # Detect which layout this project actually has instead of assuming.
+          if [ -d "ios/App/App.xcworkspace" ]; then
+            XCODE_CONTAINER=(-workspace ios/App/App.xcworkspace)
+          elif [ -d "ios/App/App.xcodeproj" ]; then
+            XCODE_CONTAINER=(-project ios/App/App.xcodeproj)
+          else
+            echo "::error::Neither ios/App/App.xcworkspace nor ios/App/App.xcodeproj exists — the iOS platform was not generated."
+            exit 1
+          fi
+          echo "Using xcodebuild container: ${XCODE_CONTAINER[*]}"
 
-          xcodebuild -workspace ios/App/App.xcworkspace \
+          echo "----- signing-relevant build settings before archive -----"
+          xcodebuild "${XCODE_CONTAINER[@]}" -scheme App -configuration Release -showBuildSettings 2>/dev/null | grep -E "CODE_SIGN|DEVELOPMENT_TEAM|PROVISIONING_PROFILE|PRODUCT_BUNDLE_IDENTIFIER" || true
+
+          xcodebuild "${XCODE_CONTAINER[@]}" \
             -scheme App \
             -configuration Release \
             -archivePath "$RUNNER_TEMP/App.xcarchive" \
