@@ -73,11 +73,20 @@
     if (res.status === 401) {
       // Session expired or was never established — send back through the
       // purchase-verification/login flow rather than showing a dead page.
-      window.location.href = "/login";
+      window.location.href = "/reconnect";
       return new Promise(function () {}); // never resolves; we're navigating away
     }
     try {
-      return await res.json();
+      var data = await res.json();
+      // GitHub rejected the stored token (revoked/expired). The session cookie is still
+      // fine, so nothing on our side returns 401 — but every repo call fails with
+      // "Bad credentials" until the buyer signs in again. Re-auth with GitHub
+      // automatically instead of leaving them stuck until they log out and back in.
+      if (data && data.ok === false && /bad credentials|requires authentication/i.test(String(data.detail || ""))) {
+        window.location.href = "/reconnect";
+        return new Promise(function () {});
+      }
+      return data;
     } catch (err) {
       // Response came back but wasn't valid JSON (e.g. a proxy/edge error
       // page) — same reasoning as above, fail into the normal error path.
@@ -995,6 +1004,29 @@
     });
   }
 
+  // The connected repo is saved server-side (projects table) when /api/connect succeeds, but the
+  // page only ever kept it in memory — so any reload, expired tab, or re-login showed
+  // "Not connected yet" and locked Build & Sign until the buyer re-picked the repo. Restore the
+  // most recently used project on startup instead.
+  async function restoreConnectedProject() {
+    try {
+      var res = await api("/api/projects");
+      var projects = (res && res.ok && res.projects) || [];
+      if (!projects.length) return;
+      var p = projects[0]; // newest first (ORDER BY updated_at DESC)
+      state.owner = p.owner;
+      state.repo = p.repo;
+      state.defaultBranch = p.default_branch || "main";
+      state.connected = true;
+      $("#repoPath").textContent = state.owner + "/" + state.repo;
+      unlockSections();
+      renderConnectedRepoCard();
+      loadScan();
+    } catch (err) {
+      // Never block the wizard on this — worst case they see the normal repo picker.
+    }
+  }
+
   unlockSections();
-  switchSection("project");
+  restoreConnectedProject().then(function () { switchSection("project"); });
 })();
