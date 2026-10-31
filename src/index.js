@@ -30,7 +30,7 @@ import { diagnoseIosProfile, diagnoseAndroidKeystore, formatReport } from "./lib
 import { autoProvisionSigning, AscApiError } from "./lib/asc-auto-provision.js";
 import { TEMPLATE_FILES } from "./lib/template-files.generated.js";
 import { WIZARD_HTML, WIZARD_JS, WIZARD_CSS } from "./lib/public-embed.generated.js";
-import { handleScan } from "./lib/app-scan.js";
+import { handleScan, handleShot } from "./lib/app-scan.js";
 
 const SESSION_COOKIE = "mx_session";
 const SUPPORT_EMAIL = "jackson@macless.dev"; // the only real inbox — support@ was never created
@@ -457,6 +457,7 @@ export default {
 
     // Free App Store risk scanner used by the homepage hero.
     if (pathname === "/api/app-scan") return handleScan(request, env);
+    if (pathname === "/api/app-shot") return handleShot(request, env);
 
     try {
       // ---- purchase verification + GitHub OAuth ---------------------------------------------------
