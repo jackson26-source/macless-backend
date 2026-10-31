@@ -301,3 +301,36 @@ export async function handleScan(request, env) {
   }
   return res;
 }
+
+export async function handleShot(request) {
+  const target = new URL(request.url).searchParams.get("url");
+  const u = normalizeUrl(target);
+  if (!u) return json({ error: "bad_url", message: "Bad address." }, 400);
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  const key = new Request("https://macless.dev/api/app-shot-cache?u=" + encodeURIComponent(u.href));
+  if (cache) {
+    const hit = await cache.match(key);
+    if (hit) return hit;
+  }
+  const providers = [
+    "https://api.microlink.io/?url=" + encodeURIComponent(u.href) + "&screenshot=true&meta=false&embed=screenshot.url&viewport.width=390&viewport.height=844&viewport.isMobile=true&viewport.deviceScaleFactor=2&screenshot.fullPage=true&screenshot.type=jpeg&waitForTimeout=2500",
+    "https://image.thum.io/get/width/780/crop/1688/noanimate/" + u.href,
+  ];
+  for (const p of providers) {
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 25000);
+      const res = await fetch(p, { redirect: "follow", signal: ctl.signal });
+      clearTimeout(timer);
+      const type = res.headers.get("content-type") || "";
+      if (res.ok && type.startsWith("image/")) {
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength > 6000000) continue;
+        const out = new Response(buf, { headers: { "content-type": type, "cache-control": "public, max-age=3600" } });
+        if (cache) { try { await cache.put(key, out.clone()); } catch {} }
+        return out;
+      }
+    } catch {}
+  }
+  return json({ error: "no_shot", message: "Couldn't render a preview." }, 502);
+}
