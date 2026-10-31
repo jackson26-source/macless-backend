@@ -316,6 +316,7 @@ export async function handleShot(request) {
     "https://api.microlink.io/?url=" + encodeURIComponent(u.href) + "&screenshot=true&meta=false&embed=screenshot.url&viewport.width=390&viewport.height=844&viewport.isMobile=true&viewport.deviceScaleFactor=2&screenshot.fullPage=true&screenshot.type=jpeg&waitForTimeout=2500",
     "https://image.thum.io/get/width/780/crop/1688/noanimate/" + u.href,
   ];
+  const notes = [];
   for (const p of providers) {
     try {
       const ctl = new AbortController();
@@ -323,14 +324,15 @@ export async function handleShot(request) {
       const res = await fetch(p, { redirect: "follow", signal: ctl.signal });
       clearTimeout(timer);
       const type = res.headers.get("content-type") || "";
+      notes.push(p.slice(8, 20) + ":" + res.status + ":" + type.slice(0, 20));
       if (res.ok && type.startsWith("image/")) {
         const buf = await res.arrayBuffer();
         if (buf.byteLength > 6000000) continue;
-        const out = new Response(buf, { headers: { "content-type": type, "cache-control": "public, max-age=3600" } });
+        const out = new Response(buf, { headers: { "content-type": type, "cache-control": "public, max-age=3600", "x-shot-notes": notes.join("|") } });
         if (cache) { try { await cache.put(key, out.clone()); } catch {} }
         return out;
       }
-    } catch {}
+    } catch (e) { notes.push(p.slice(8, 20) + ":err:" + String(e && e.message).slice(0, 40)); }
   }
-  return json({ error: "no_shot", message: "Couldn't render a preview." }, 502);
+  return json({ error: "no_shot", notes, message: "Couldn't render a preview." }, 502);
 }
