@@ -71,7 +71,7 @@ async function getText(url, max, accept) {
     } else {
       text = (await res.text()).slice(0, max);
     }
-    return { ok: res.ok, status: res.status, url: res.url, type: res.headers.get("content-type") || "", text };
+    return { ok: res.ok, status: res.status, url: res.url, type: res.headers.get("content-type") || "", xfo: res.headers.get("x-frame-options") || "", csp: res.headers.get("content-security-policy") || "", text };
   } finally {
     clearTimeout(timer);
   }
@@ -155,6 +155,31 @@ export async function scanApp(rawUrl) {
   const safeArea = /viewport-fit=cover|safe-area-inset/i.test(all);
   const privacyLink = /privacy/i.test(all);
 
+  const xfo = (page.xfo || "").toLowerCase();
+  const fa = (page.csp.match(/frame-ancestors([^;]*)/i) || [])[1];
+  let frameable = !(xfo.includes("deny") || xfo.includes("sameorigin"));
+  if (fa !== undefined) {
+    const f = fa.toLowerCase();
+    frameable = frameable && !f.includes("'none'") && (f.split(" ").includes("*") || f.includes("macless.dev"));
+  }
+  const metaTags = html.match(/<meta[^>]*>/gi) || [];
+  const metaContent = (re) => {
+    const tag = metaTags.find((x) => re.test(x));
+    const c = tag && tag.match(/content=["']([^"']*)["']/i);
+    return c ? c[1] : "";
+  };
+  const abs = (p) => { try { return p ? new URL(p, page.url).toString() : ""; } catch { return ""; } };
+  const iconTag = (html.match(/<link[^>]*>/gi) || []).find((x) => /apple-touch-icon/i.test(x)) || "";
+  const iconHref = iconTag.match(/href=["']([^"']+)["']/i);
+  const titleM = html.match(/<title[^>]*>([^<]{1,120})</i);
+  const preview = {
+    frameable,
+    title: titleM ? titleM[1].trim() : "",
+    ogImage: abs(metaContent(/property=["']og:image["']/i)),
+    icon: abs(iconHref && iconHref[1]),
+    themeColor: metaContent(/name=["']theme-color["']/i),
+  };
+
   const F = [];
   const add = (status, id, title, detail, guideline) => F.push({ status, id, title, detail, guideline: guideline || null });
 
@@ -236,6 +261,7 @@ export async function scanApp(rawUrl) {
     url: page.url,
     host: new URL(page.url).hostname,
     platform,
+    preview,
     level,
     fails, warns, passes: F.length - risks,
     findings: F.sort((a, b) => ({ fail: 0, warn: 1, pass: 2 }[a.status] - { fail: 0, warn: 1, pass: 2 }[b.status])),
