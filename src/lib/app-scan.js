@@ -1,4 +1,4 @@
-// Macless App Store risk scanner. GET /api/scan?url=https://their.app
+// Macless App Store risk scanner. GET /api/app-scan?url=https://their.app
 // Reads only what the public website serves (HTML, manifest, first few JS bundles).
 // It cannot see the built native app, logins, or App Store Connect, and says so.
 
@@ -130,7 +130,10 @@ export async function scanApp(rawUrl) {
   const hasManifestLink = !!manifestHref;
 
   // ---- signals ----
-  const platform = (PLATFORMS.find((p) => p.test(html, bundles)) || {}).name || null;
+  const refs = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/gi)].map((m) => m[1]).join(" ");
+  const metaNames = [...html.matchAll(/<meta[^>]+name=["']([^"']+)["']/gi)].map((m) => m[1]).join(" ");
+  const sig = refs + " " + metaNames;
+  const platform = (PLATFORMS.find((p) => p.test(sig, bundles)) || {}).name || null;
   const payments = [];
   if (/js\.stripe\.com|buy\.stripe\.com|checkout\.stripe\.com|loadStripe|@stripe\//.test(all)) payments.push("Stripe");
   if (/paypal\.com\/sdk|paypalobjects\.com/.test(all)) payments.push("PayPal");
@@ -141,13 +144,13 @@ export async function scanApp(rawUrl) {
   const appleLogin = /appleid\.apple\.com|signInWithApple|sign in with apple|apple-signin/i.test(all);
   const otherSocial = /facebook\.com\/v\d+\.\d+\/dialog\/oauth|github\.com\/login\/oauth|signInWithPopup|loginWithPopup/.test(all);
   const redirectLogin = /redirectToLogin|loginWithRedirect|signInWithRedirect|\/oauth\/authorize|\/auth\/login\?.*redirect/i.test(all);
-  const hasAuth = googleLogin || appleLogin || otherSocial || redirectLogin || /type=["']password["']|sign.?up|create (an )?account|register/i.test(html);
+  const hasAuth = googleLogin || appleLogin || otherSocial || redirectLogin || /type=["']password["']|type:\s*["']password["']|autocomplete=["'](current|new)-password/i.test(all);
   const deleteAccount = /delete[\s_-]?account|deleteAccount|delete[\s_-]?my[\s_-]?(account|data)|remove[\s_-]?account/i.test(all);
   const geo = /navigator\.geolocation|getCurrentPosition|watchPosition/.test(all);
   const camera = /getUserMedia|capture=["']|type=["']file["'][^>]*accept=["'][^"']*image/i.test(all);
   const mic = /getUserMedia\(\{[^}]*audio|MediaRecorder/.test(all);
   const swRegister = /serviceWorker\.register|navigator\.serviceWorker/.test(all);
-  const viewport = /<meta[^>]+name=["']viewport["'][^>]+content=["'][^"']*width=device-width/i.test(html);
+  const viewport = (html.match(/<meta[^>]*>/gi) || []).some((tag) => /name=["']viewport["']/i.test(tag) && /width=device-width/i.test(tag));
   const safeArea = /viewport-fit=cover|safe-area-inset/i.test(all);
   const privacyLink = /href=["'][^"']*(privacy|terms)[^"']*["']/i.test(html) || /privacy[\s-]?policy/i.test(html);
 
