@@ -107,6 +107,7 @@ export async function scanApp(rawUrl) {
   if (page.status === 401 || page.status === 403 || page.status === 429 || page.status === 503) {
     return { error: "blocked", message: "The site refused our scan (HTTP " + page.status + "). Some hosts block automated requests. Send us the link and we'll check it by hand.", status: page.status };
   }
+  if (page.status >= 520 && page.status <= 530) return { error: "unreachable", message: "We couldn't find a site at that address. Check the spelling and try again.", status: page.status };
   if (!page.ok) return { error: "unreachable", message: "That address returned HTTP " + page.status + ".", status: page.status };
   const html = page.text;
   if (!/<html|<!doctype|<body|<div/i.test(html)) return { error: "not_html", message: "That address didn't return a web page." };
