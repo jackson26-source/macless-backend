@@ -152,7 +152,7 @@ export async function scanApp(rawUrl) {
   const swRegister = /serviceWorker\.register|navigator\.serviceWorker/.test(all);
   const viewport = (html.match(/<meta[^>]*>/gi) || []).some((tag) => /name=["']viewport["']/i.test(tag) && /width=device-width/i.test(tag));
   const safeArea = /viewport-fit=cover|safe-area-inset/i.test(all);
-  const privacyLink = /href=["'][^"']*(privacy|terms)[^"']*["']/i.test(html) || /privacy[\s-]?policy/i.test(html);
+  const privacyLink = /privacy/i.test(all);
 
   const F = [];
   const add = (status, id, title, detail, guideline) => F.push({ status, id, title, detail, guideline: guideline || null });
