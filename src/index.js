@@ -456,7 +456,7 @@ export default {
     const pathname = url.pathname;
 
     // Free App Store risk scanner used by the homepage hero.
-    if (pathname === "/api/scan") return handleScan(request, env);
+    if (pathname === "/api/app-scan") return handleScan(request, env);
 
     try {
       // ---- purchase verification + GitHub OAuth ---------------------------------------------------
